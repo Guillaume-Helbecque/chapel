@@ -5652,7 +5652,7 @@ This function is equivalent to calling :proc:`open` and then
                             be a directory but was not
 :throws SystemError: If a fileReader could not be returned.
 :throws IllegalArgumentError: If trying to read explicitly prior to byte
-                              0.
+                              0 or if the byte range ends before it begins.
  */
 proc openReader(path:string, param locking = false,
                 region: range(?) = 0.., hints=ioHintSet.empty,
@@ -5761,7 +5761,7 @@ This function is equivalent to calling :proc:`open` with ``ioMode.cwr`` and then
                             be a directory but was not
 :throws SystemError: If a fileWriter could not be returned.
 :throws IllegalArgumentError: If trying to write explicitly prior to byte
-                              0.
+                              0 or if the byte range ends before it begins.
 */
 proc openWriter(path:string, param locking = false,
                 hints = ioHintSet.empty,
@@ -5817,7 +5817,7 @@ proc openWriter(path:string, param locking = false,
 
    :throws SystemError: If a fileReader could not be returned.
    :throws IllegalArgumentError: If trying to read explicitly prior to
-                                 byte 0.
+                                 byte 0 or if the byte range ends before it begins.
  */
 proc file.reader(param locking = false,
                  region: range(?) = 0.., hints = ioHintSet.empty,
@@ -5835,6 +5835,9 @@ proc file.readerHelper(param locking=true,
   : fileReader(locking, dt) throws {
   if (region.hasLowBound() && region.low < 0) {
     throw new IllegalArgumentError("illegal argument 'region': file region's lowest accepted bound is 0");
+  }
+  if (region.hasLowBound() && region.hasHighBound() && region.high < region.low) {
+    throw new IllegalArgumentError("illegal argument 'region': file region's lower bound must be less than its high bound");
   }
 
   // It is the responsibility of the caller to release the returned fileReader
@@ -5921,7 +5924,7 @@ proc file.readerHelper(param locking=true,
 
    :throws SystemError: If a fileWriter could not be returned.
    :throws IllegalArgumentError: If trying to write explicitly prior to
-                                 byte 0.
+                                 byte 0 or if the byte range ends before it begins.
  */
 proc file.writer(param locking = false,
                  region: range(?) = 0.., hints = ioHintSet.empty,
@@ -5939,6 +5942,9 @@ proc file.writerHelper(param locking=false,
 
   if (region.hasLowBound() && region.low < 0) {
     throw new IllegalArgumentError("illegal argument 'region': file region's lowest accepted bound is 0");
+  }
+  if (region.hasLowBound() && region.hasHighBound() && region.high < region.low) {
+    throw new IllegalArgumentError("illegal argument 'region': file region's lower bound must be less than its high bound");
   }
 
   // It is the responsibility of the caller to retain and release the returned
