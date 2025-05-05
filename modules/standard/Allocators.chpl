@@ -31,7 +31,7 @@
   For example, the following code demonstrates how the :type:`mallocWrapper`
   allocator can be used to allocate a Chapel class.
 
-  .. literalinclude:: ../../../../test/library/standard/Allocators/doc-examples/mallocWrapper.chpl
+  .. literalinclude:: ../../../../test/library/standard/Allocators/doc-examples/example_mallocWrapper.chpl
    :language: chapel
    :start-after: START_EXAMPLE
    :end-before: STOP_EXAMPLE
@@ -116,7 +116,7 @@ module Allocators {
 
     Example:
 
-    .. literalinclude:: ../../../../test/library/standard/Allocators/doc-examples/newWithAllocator.chpl
+    .. literalinclude:: ../../../../test/library/standard/Allocators/doc-examples/example_newWithAllocator.chpl
      :language: chapel
      :start-after: START_EXAMPLE
      :end-before: STOP_EXAMPLE
