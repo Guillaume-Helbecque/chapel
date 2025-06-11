@@ -800,6 +800,7 @@ module Python {
       like 'x,' or '\*args'
 
       For example:
+
       .. code-block:: chapel
 
          interpreter.compileLambda("lambda x, y,: x + y");
@@ -2569,7 +2570,7 @@ module Python {
 
       For example, to create a lambda function that takes two arguments, use:
 
-      .. code-block:: python
+      .. code-block:: chapel
 
          new Function(interpreter, "lambda x, y,: x + y")
 
