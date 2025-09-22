@@ -329,11 +329,19 @@ void makeRefType(Type* type) {
     return;
   }
 
-  CallExpr* call = new CallExpr(dtRef->symbol, type->symbol);
-  resolveUninsertedCall(type, call, false);
-  type->refType  = toAggregateType(call->typeInfo());
+  if (dtRef) {
+    CallExpr* call = new CallExpr(dtRef->symbol, type->symbol);
+    resolveUninsertedCall(type, call, false);
+    type->refType  = toAggregateType(call->typeInfo());
 
-  type->refType->getField(1)->type = type;
+    type->refType->getField(1)->type = type;
+  } else {
+    // We no longer have access to the generic 'ref' type, which means it
+    // was already pruned. In which case, we should generate as though we
+    // are at codegen. TODO: Why can't we just do this always?
+    auto rt = getOrMakeRefTypeDuringCodegen(type);
+    INT_ASSERT(rt && type->refType);
+  }
 
   if (type->symbol->hasFlag(FLAG_ATOMIC_TYPE))
     type->refType->symbol->addFlag(FLAG_ATOMIC_TYPE);
@@ -462,6 +470,7 @@ static Type* canCoerceToCopyType(Type* actualType, Symbol* actualSym,
   if (isSyncType(actualValType)) {
     copyType = getCopyTypeDuringResolution(actualValType);
   } else if (isAliasingArrayType(actualValType) ||
+             (actualSym != NULL && actualSym->hasFlag(FLAG_IS_ARRAY_VIEW)) ||
              actualValType->symbol->hasFlag(FLAG_ITERATOR_RECORD)) {
     // The conditions below avoid infinite loops and problems
     // relating to resolving initCopy for iterators when not needed.
@@ -668,7 +677,7 @@ isLegalLvalueActualArg(ArgSymbol* formal, Expr* actual,
 
     // don't emit lvalue errors for array slices
     // (we can think of these as a special kind of reference)
-    if (isAliasingArrayType(sym->type)) {
+    if (sym->hasFlag(FLAG_IS_ARRAY_VIEW) || isAliasingArrayType(sym->type)) {
       actualExprTmp = false;
     }
 
@@ -2408,7 +2417,7 @@ static void reissueMsgHelp(CallExpr* from, const char* str, bool err) {
   if (err) {
     USR_FATAL(from, "%s", str);
   } else {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
     USR_WARN(from, "%s", str);
   }
 }
@@ -2671,40 +2680,61 @@ static FnSymbol* resolveUninsertedCall(Expr* insert, CallExpr* call,
 }
 
 static void checkForInfiniteRecord(AggregateType* at, std::set<AggregateType*>& nestedRecords) {
+
+  // no need to check for extern records, since the extern compiler checks that
+  // and we will never reach this point in compilation with an extern record
+  // and including a check on extern records leads to false positives with
+  // `c_ptr(record)`
+  // it may be possible in the future for us to codegen c_ptr(record), and then
+  // this extra check for extern records could be removed
+  if (at->symbol->hasFlag(FLAG_EXTERN))
+    return;
+
+  auto inner = [&at, &nestedRecords](Symbol* field, AggregateType* ft, Type* realType = nullptr) {
+    if (!ft) return;
+    if (nestedRecords.find(ft) != nestedRecords.end()) {
+
+      Type* typeForError = realType ? realType : at;
+
+      // Found a cycle
+      // Note: error message text agreed upon in #10281
+      if (ft == at) {
+        // Simple cycle:
+        // record B {
+        //   var b : B;
+        // }
+        USR_FATAL(field,
+                  "record '%s' cannot contain a recursive field '%s' of type '%s'",
+                  at->symbol->name,
+                  field->name,
+                  typeForError->symbol->name);
+      } else {
+        // Cycle involving multiple records
+        if (at->symbol->hasFlag(FLAG_TUPLE)) {
+          USR_FATAL(ft, "tuple '%s' cannot contain recursive record type '%s'", at->symbol->name, ft->symbol->name);
+        } else {
+          USR_FATAL(field,
+                    "record '%s' cannot contain a recursive field '%s' whose type '%s' contains '%s'",
+                    at->symbol->name,
+                    field->name,
+                    ft->symbol->name,
+                    typeForError->symbol->name);
+        }
+      }
+    } else {
+      nestedRecords.insert(ft);
+      checkForInfiniteRecord(ft, nestedRecords);
+      nestedRecords.erase(ft);
+    }
+  };
   for_fields(field, at) {
     if (isRecord(field->type)) {
       AggregateType* ft = toAggregateType(field->type);
-      if (nestedRecords.find(ft) != nestedRecords.end()) {
-        // Found a cycle
-        // Note: error message text agreed upon in #10281
-        if (ft == at) {
-          // Simple cycle:
-          // record B {
-          //   var b : B;
-          // }
-          USR_FATAL(field,
-                    "record '%s' cannot contain a recursive field '%s' of type '%s'",
-                    at->symbol->name,
-                    field->name,
-                    at->symbol->name);
-        } else {
-          // Cycle involving multiple records
-          if (at->symbol->hasFlag(FLAG_TUPLE)) {
-            USR_FATAL(ft, "tuple '%s' cannot contain recursive record type '%s'", at->symbol->name, ft->symbol->name);
-          } else {
-            USR_FATAL(field,
-                      "record '%s' cannot contain a recursive field '%s' whose type '%s' contains '%s'",
-                      at->symbol->name,
-                      field->name,
-                      ft->symbol->name,
-                      at->symbol->name);
-          }
-        }
-      } else {
-        nestedRecords.insert(ft);
-        checkForInfiniteRecord(ft, nestedRecords);
-        nestedRecords.erase(ft);
-      }
+      inner(field, ft);
+    } else if (isCPtrToRecord(field->type)) {
+      AggregateType* ft = toAggregateType(
+        getDataClassType(field->type->symbol)->typeInfo());
+      inner(field, ft, /*realType=*/field->type);
     }
   }
 }
@@ -2793,7 +2823,6 @@ static void markArraysOfBorrows(AggregateType* at) {
 
 void resolvePromotionType(AggregateType* at) {
   INT_ASSERT(at->scalarPromotionType == NULL);
-  INT_ASSERT(at->symbol->hasFlag(FLAG_GENERIC) == false);
 
   // don't try to resolve promotion types for sync
   // (for erroneous sync of array it leads to coercion which leads
@@ -3352,12 +3381,7 @@ static bool resolveClassBorrowMethod(CallExpr* call) {
 // resolving calls, but we may not be able to do that until dyno is used
 // to resolve code.
 static bool resolveFunctionPointerCall(CallExpr* call) {
-  FunctionType* ft = nullptr;
-  if (auto base = call->baseExpr)
-    if (auto se = toSymExpr(base))
-      if (auto baseFnType = toFunctionType(se->getValType()))
-        ft = baseFnType;
-
+  auto ft = call->isIndirectCall() ? call->functionType() : nullptr;
   if (!ft) return false;
 
   auto base = call->baseExpr;
@@ -3399,7 +3423,7 @@ static bool resolveFunctionPointerCall(CallExpr* call) {
     Type* actualType = actual->qualType().type();
     Symbol* actualSym = isSymExpr(actual) ? toSymExpr(actual)->symbol()
                                           : nullptr;
-    Type* formalType = ft->formal(i)->type;
+    Type* formalType = ft->formal(i)->type();
     ArgSymbol* formalSym = nullptr;
     FnSymbol* fn = nullptr;
     bool promotes = false;
@@ -3684,7 +3708,7 @@ static void warnForCallConcreteType(CallExpr* call, Type* t) {
 
 static Type* resolveTypeSpecifier(CallInfo& info) {
   CallExpr* call = info.call;
-  if (call->id == breakOnResolveID) gdbShouldBreakHere();
+  if (call->id == breakOnResolveID) debuggerBreakHere();
 
   Type* ret = NULL;
 
@@ -3962,7 +3986,7 @@ FnSymbol* resolveNormalCall(CallExpr* call, check_state_t checkState) {
   if (call->id == breakOnResolveID) {
     printf("breaking on resolve call %d:\n", call->id);
     print_view(call);
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
 
   resolveGenericActuals(call);
@@ -4029,7 +4053,7 @@ static bool isGenericRecordInit(CallExpr* call) {
          ures->unresolved == astrInitEquals) &&
         call->numActuals()               >= 2) {
       Type* t1 = call->get(1)->typeInfo();
-      Type* t2 = call->get(2)->typeInfo();
+      Type* t2 = call->get(2)->typeInfo()->getValType();
 
       if (t1                                  == dtMethodToken &&
           isGenericRecordWithInitializers(t2) == true) {
@@ -4367,6 +4391,20 @@ static FnSymbol* resolveNormalCall(CallInfo&            info,
     }
 
     call->baseExpr->replace(new SymExpr(retval));
+
+    //
+    // Mark results to calls that return aliasing arrays as being an array view
+    //
+    if (retval->hasFlag(FLAG_RETURNS_ALIASING_ARRAY)) {
+      if (CallExpr* parent = toCallExpr(call->parentExpr)) {
+        if (parent->isPrimitive(PRIM_MOVE)) {
+          if (SymExpr* se = toSymExpr(parent->get(1))) {
+            se->symbol()->addFlag(FLAG_IS_ARRAY_VIEW);
+            se->symbol()->addFlag(FLAG_INSERT_AUTO_DESTROY);
+          }
+        }
+      }
+    }
 
     resolveNormalCallConstRef(call);
 
@@ -5510,6 +5548,11 @@ static BlockStmt* findVisibleFunctionsAndCandidates(
     scopeUsed = visInfo.currStart;
 
     advanceCurrStart(visInfo);
+
+    // prevent infinite loop
+    if (scopeUsed == visInfo.currStart) {
+      break;
+    }
   }
   while
     (candidates.n == 0 && visInfo.currStart != NULL);
@@ -5619,7 +5662,7 @@ static void filterCandidate(CallInfo&                  info,
     USR_PRINT(fn, "Considering function: %s", toString(fn));
 
     if (info.call->id == breakOnResolveID) {
-      gdbShouldBreakHere();
+      debuggerBreakHere();
     }
   }
 
@@ -5695,9 +5738,6 @@ static FnSymbol* adjustAndResolveForwardedCall(CallExpr* call, ForwardingStmt* d
   tgt->addFlag(FLAG_MAYBE_REF);
   tgt->addFlag(FLAG_MAYBE_TYPE);
   DefExpr* defTgt = new DefExpr(tgt);
-
-  // note: cycle detection uses the name of tgt
-  // as well as the fact that it's 1st in the block
   callStmt->insertBefore(defTgt);
 
   // Set the target
@@ -5727,37 +5767,13 @@ static FnSymbol* adjustAndResolveForwardedCall(CallExpr* call, ForwardingStmt* d
   return ret;
 }
 
-static void detectForwardingCycle(CallExpr* call) {
-  BlockStmt* cur = toBlockStmt(call->getStmtExpr()->parentExpr);
-  DefExpr* firstDef = NULL;
-  while (cur != NULL) {
-    DefExpr* def = toDefExpr(cur->body.head);
-    if (def == NULL || def->sym->name != astr_chpl_forward_tgt)
-      return; // not a cycle
-
-    if (firstDef == NULL) {
-      firstDef = def;
-      INT_ASSERT(firstDef->sym->type && firstDef->sym->type != dtUnknown);
-    } else {
-      // If firstDef has same type as def, cycle is found.
-      if (firstDef->sym->type == def->sym->type) {
-        Type* t = canonicalDecoratedClassType(firstDef->sym->getValType());
-        TypeSymbol* ts = t->symbol;
-        USR_FATAL_CONT(def, "forwarding cycle detected");
-        USR_PRINT(ts, "for the type %s", ts->name);
-        USR_STOP();
-      }
-    }
-    cur = toBlockStmt(cur->parentExpr);
-  }
-}
-
+llvm::SmallVector<std::tuple<AggregateType*, const char*, const char*>, 4> forwardCallCycleSet;
 
 // Returns a relevant FnSymbol if it worked
 static FnSymbol* resolveForwardedCall(CallInfo& info, check_state_t checkState) {
   CallExpr* call = info.call;
-  const char* calledName = info.name;
-  const char* inFnName = call->getFunction()->name;
+  const char* calledName = astr(info.name);
+  const char* inFnName = astr(call->getFunction()->name);
   Expr* receiver = call->get(2);
   Type* t = receiver->getValType();
   AggregateType* at = toAggregateType(canonicalDecoratedClassType(t));
@@ -5788,7 +5804,24 @@ static FnSymbol* resolveForwardedCall(CallInfo& info, check_state_t checkState) 
   }
 
   // Detect cycles
-  detectForwardingCycle(call);
+  {
+    auto key = std::make_tuple(at, calledName, inFnName);
+    auto it = std::find(forwardCallCycleSet.begin(),
+                        forwardCallCycleSet.end(), key);
+    if (it != forwardCallCycleSet.end()) {
+      // If we have seen this type before, then we have a cycle.
+      // Note: this is not a perfect cycle detection, but it works
+      // for the current use cases.
+      USR_FATAL_CONT(call, "forwarding cycle detected");
+      for (auto& it : forwardCallCycleSet) {
+        auto cycleAt = std::get<0>(it);
+        USR_PRINT(cycleAt, "forwarding cycle includes type '%s'",
+                  cycleAt->symbol->name);
+      }
+      USR_STOP();
+    }
+    forwardCallCycleSet.push_back(key);
+  }
 
   // Try each of the forwarding clauses to see if any get us
   // a match.
@@ -5819,9 +5852,7 @@ static FnSymbol* resolveForwardedCall(CallInfo& info, check_state_t checkState) 
     BlockStmt* block = new BlockStmt(forwardedCall, BLOCK_SCOPELESS);
     call->getStmtExpr()->insertBefore(block);
 
-    FnSymbol* fn = NULL;
-    fn = adjustAndResolveForwardedCall(forwardedCall, delegate, methodName);
-
+    auto fn = adjustAndResolveForwardedCall(forwardedCall, delegate, methodName);
     if (fn) {
       if (bestFn == NULL) {
         bestFn = fn;
@@ -5871,6 +5902,7 @@ static FnSymbol* resolveForwardedCall(CallInfo& info, check_state_t checkState) 
       bestBlock->flattenAndRemove();
     }
   }
+  forwardCallCycleSet.clear();
 
   return bestFn;
 }
@@ -6962,6 +6994,19 @@ static int compareSpecificity(ResolutionCandidate*         candidate1,
     return 2;
 
   } else {
+    // Note: exists to support the typed converter. We don't want to resolve to
+    // the early-resolved function if the other candidate is not early-resolved.
+    bool early1 = candidate1->fn->hasFlag(FLAG_RESOLVED_EARLY);
+    bool early2 = candidate2->fn->hasFlag(FLAG_RESOLVED_EARLY);
+
+    if (early1 && !early2) {
+      EXPLAIN("\nFn %d is resolved early, Fn %d is not\n", i, j);
+      return 2;
+    } else if (!early1 && early2) {
+      EXPLAIN("\nFn %d is not resolved early, Fn %d is\n", i, j);
+      return 1;
+    }
+
     if (nArgsIncomparable > 0 ||
         (DS.fn1NonParamArgsPreferred && DS.fn2NonParamArgsPreferred) ||
         (DS.fn1ParamArgsPreferred && DS.fn2ParamArgsPreferred)) {
@@ -7344,7 +7389,7 @@ static void handleTaskIntentArgs(CallInfo& info, FnSymbol* taskFn) {
       // INT_ASSERT(varActual->type->symbol->hasFlag(FLAG_GENERIC) == false);
 
       if (formal->id == breakOnResolveID)
-        gdbShouldBreakHere();
+        debuggerBreakHere();
 
       IntentTag origFormalIntent = formal->intent;
 
@@ -7998,7 +8043,7 @@ static Symbol* resolveFieldSymbol(Type* base, Expr* fieldExpr) {
 static void resolveSetMember(CallExpr* call) {
 
   if (call->id == breakOnResolveID) {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
 
   Symbol* fs = resolveFieldSymbol(call->get(1)->typeInfo()->getValType(),
@@ -8075,7 +8120,7 @@ static void handleSetMemberTypeMismatch(Type*     t,
 
 static void resolveInitField(CallExpr* call) {
   if (call->id == breakOnResolveID) {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
 
   INT_ASSERT(call->argList.length == 3);
@@ -8153,7 +8198,7 @@ static void resolveInitField(CallExpr* call) {
     // fields from the old instantiation
 
     if (fs->id == breakOnResolveID) {
-      gdbShouldBreakHere();
+      debuggerBreakHere();
     }
 
     bool ignoredHasDefault = false;
@@ -8490,7 +8535,7 @@ void resolveInitVar(CallExpr* call) {
   bool isParamString = dst->hasFlag(FLAG_PARAM) && isString(srcType);
 
   if (call->id == breakOnResolveID) {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
 
   if (call->isPrimitive(PRIM_INIT_VAR_SPLIT_INIT)) {
@@ -8717,9 +8762,11 @@ void resolveInitVar(CallExpr* call) {
     // of the copy does need to be destroyed.
     if (SymExpr* rhsSe = toSymExpr(srcExpr))
       if (VarSymbol* rhsVar = toVarSymbol(rhsSe->symbol()))
-        if (isAliasingArrayType(rhsVar->getValType()))
+        if (rhsVar->hasFlag(FLAG_IS_ARRAY_VIEW) ||
+            isAliasingArrayType(rhsVar->getValType())) {
           if (rhsVar->hasFlag(FLAG_NO_AUTO_DESTROY) == false)
             rhsVar->addFlag(FLAG_INSERT_AUTO_DESTROY);
+        }
 
     Symbol *definedConst = dst->hasFlag(FLAG_CONST)? gTrue : gFalse;
     CallExpr* initCopy = new CallExpr(astr_initCopy, srcExpr->remove(),
@@ -9094,7 +9141,7 @@ static bool isMoveFromMain(CallExpr* call) {
 
 static void resolveMove(CallExpr* call) {
   if (call->id == breakOnResolveID) {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
 
   if (moveIsAcceptable(call) == false) {
@@ -9318,7 +9365,7 @@ Type* moveDetermineLhsType(CallExpr* call) {
 
   if (lhsSym->type == dtUnknown || lhsSym->type == dtNil) {
     if (lhsSym->id == breakOnResolveID) {
-      gdbShouldBreakHere();
+      debuggerBreakHere();
     }
 
     Type* type = call->get(2)->typeInfo();
@@ -9797,7 +9844,7 @@ static bool isUndecoratedClassNew(CallExpr* newExpr, Type* newType);
 static void resolveNew(CallExpr* newExpr) {
 
   if (newExpr->id == breakOnResolveID) {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
 
   // If it's a managed new, detect the _chpl_manager named arg and remove it
@@ -10542,7 +10589,7 @@ static Expr* resolveFunctionTypeConstructor(DefExpr* def) {
   INT_ASSERT(fn->type == dtUnknown);
 
   if (def->id == breakOnResolveID || fn->id == breakOnResolveID) {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
 
   bool isBodyResolved = fcfs::checkAndResolveSignature(fn, def);
@@ -10552,7 +10599,6 @@ static Expr* resolveFunctionTypeConstructor(DefExpr* def) {
 
   auto ft = FunctionType::get(fn);
   INT_ASSERT(ft);
-
   Type* t = ft;
 
   // If we aren't using pointers, have to convert to a function class type
@@ -10656,6 +10702,9 @@ static Expr* swapInErrorSinkForCapture(FunctionType::Kind kind, Expr* use) {
 }
 
 static Expr* swapInFunctionForCapture(FnSymbol* fn, Expr* use) {
+  // Mark the function as a root to be added to the function table later.
+  fn->addFlag(FLAG_FIRST_CLASS_FUNCTION_INVOCATION);
+
   auto ret = new SymExpr(fn);
   use->replace(ret);
   return ret;
@@ -10691,7 +10740,7 @@ static Expr* resolveFunctionCapture(FnSymbol* fn, Expr* use,
                                     bool discardType,
                                     bool useClass) {
   if (fn->id == breakOnResolveID || use->id == breakOnResolveID) {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
 
   // Discarding the type (e.g., for 'c_ptrTo') is well specified.
@@ -10718,16 +10767,17 @@ static Expr* resolveFunctionCapture(FnSymbol* fn, Expr* use,
                      fn->name);
     }
 
-    for(auto i = 0; i < ft->numFormals(); i++) {
+    for (auto i = 0; i < ft->numFormals(); i++) {
       auto formal = ft->formal(i);
       if (formal->isGeneric()) {
-        std::string reason;
-        auto reasons = explainGeneric(formal->type);
+        auto reasons = explainGeneric(formal->type());
         if (reasons.empty()) {
-          USR_PRINT(use, "the formal '%s' is generic", formal->name);
+          USR_PRINT(use, "the formal '%s' is generic", formal->name());
         } else {
           for (auto& r : reasons) {
-            USR_PRINT(use, "the formal '%s' is generic because %s", formal->name, r.c_str());
+            USR_PRINT(use, "the formal '%s' is generic because %s",
+                      formal->name(),
+                      r.c_str());
           }
         }
       }
@@ -10809,7 +10859,7 @@ static Expr* maybeResolveFunctionCapturePrimitive(CallExpr* call) {
     return nullptr;
   }
 
-  if (call->id == breakOnResolveID) gdbShouldBreakHere();
+  if (call->id == breakOnResolveID) debuggerBreakHere();
 
   switch (call->primitive->tag) {
 
@@ -10918,7 +10968,7 @@ Expr* resolveExpr(Expr* expr) {
   Expr*     retval = NULL;
 
   if (expr->id == breakOnResolveID)
-    gdbShouldBreakHere();
+    debuggerBreakHere();
 
   SET_LINENO(expr);
 
@@ -11699,6 +11749,9 @@ static bool isSerdeSingleInterface(InterfaceSymbol* isym) {
 }
 
 static void checkSpeciallyNamedMethods() {
+  // with --dyno this should be handled by the frontend
+  if (fDynoResolver) return;
+
   static const std::unordered_map<const char*, InterfaceSymbol*> reservedNames = {
     { astr("hash"), gHashable },
     { astr("enterContext"), gContextManager },
@@ -11778,6 +11831,7 @@ static void checkSpeciallyNamedMethods() {
     if (ifc == gSerializable) {
       continue;
     }
+    if (at->symbol->hasFlag(FLAG_RESOLVED_EARLY)) continue;
 
     USR_WARN(at,
              "the type '%s' defines methods that previously had special meaning. "
@@ -12650,8 +12704,7 @@ static void resolveAutoCopies() {
   for_alive_in_expanding_Vec(TypeSymbol, ts, gTypeSymbols) {
     if (! ts->hasFlag(FLAG_GENERIC)                 &&
         ! ts->hasFlag(FLAG_SYNTACTIC_DISTRIBUTION)  &&
-        ! ts->hasFlag(FLAG_REF)                     &&
-        ! ts->hasFlag(FLAG_RESOLVED_EARLY)) {
+        ! ts->hasFlag(FLAG_REF)) {
       if (AggregateType* at = toAggregateType(ts->type)) {
         if (isRecord(at) || isUnion(at)) {
           // If we attempt to resolve auto-copy and co. for an infinite record
@@ -13659,7 +13712,7 @@ static void resolvePrimInit(CallExpr* call) {
 
 static void resolvePrimInit(CallExpr* call, Symbol* val, Type* type) {
 
-  if (call->id == breakOnResolveID) gdbShouldBreakHere();
+  if (call->id == breakOnResolveID) debuggerBreakHere();
 
   AggregateType* at = toAggregateType(type);
   val->type = type;
@@ -13951,7 +14004,7 @@ static void errorInvalidParamInit(CallExpr* call, Symbol* val, Type* type) {
 static void lowerPrimInit(CallExpr* call, Symbol* val, Type* type,
                           Expr* preventingSplitInit) {
 
-  if (call->id == breakOnResolveID) gdbShouldBreakHere();
+  if (call->id == breakOnResolveID) debuggerBreakHere();
 
   AggregateType* at     = toAggregateType(type);
 
@@ -14741,7 +14794,7 @@ static void resolveInitRef(CallExpr* call) {
                refSym->hasFlag(FLAG_REF_VAR));
     INT_ASSERT(refSym->type == dtUnknown); // fyi
 
-    if (refSym->id == breakOnResolveID) gdbShouldBreakHere();
+    if (refSym->id == breakOnResolveID) debuggerBreakHere();
     resolveExpr(call->get(2)); // the normalized type expression
     Expr* typeExpr = call->get(2)->remove();
     if (SymExpr* typeSE = toSymExpr(typeExpr))

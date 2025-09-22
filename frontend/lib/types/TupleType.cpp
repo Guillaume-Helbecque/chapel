@@ -160,7 +160,8 @@ TupleType::getGenericTupleType(Context* context) {
 
 const TupleType*
 TupleType::getQualifiedTuple(Context* context,
-                             std::vector<QualifiedType> eltTypes) {
+                             std::vector<QualifiedType> eltTypes,
+                             bool isVarArgTuple) {
   SubstitutionsMap subs;
   int i = 0;
   for (const auto& t : eltTypes) {
@@ -170,24 +171,25 @@ TupleType::getQualifiedTuple(Context* context,
 
   const TupleType* instantiatedFrom = getGenericTupleType(context);
   return getTupleType(context, instantiatedFrom,
-                      std::move(subs), true).get();
+                      std::move(subs), isVarArgTuple).get();
 }
 
 const TupleType*
-TupleType::getStarTuple(Context* context,
-                        QualifiedType paramSize,
-                        QualifiedType varArgEltType) {
+TupleType::getVarArgTuple(Context* context,
+                          QualifiedType paramSize,
+                          QualifiedType varArgEltType) {
   if (!paramSize.isUnknown()) {
     // Fixed size, we can at least create a star tuple of AnyType
     int64_t numElements = paramSize.param()->toIntParam()->value();
     std::vector<QualifiedType> eltTypes(numElements, varArgEltType);
-    return getQualifiedTuple(context, eltTypes);
+    return getQualifiedTuple(context, eltTypes, true);
   } else {
     // Size unknown, store the expected element type
     const TupleType* instantiatedFrom = getGenericTupleType(context);
     SubstitutionsMap subs;
     subs.emplace(idForTupElt(-1), varArgEltType);
-    return getTupleType(context, instantiatedFrom, subs, true).get();
+    const bool isVarArgTuple = true;
+    return getTupleType(context, instantiatedFrom, subs, isVarArgTuple).get();
   }
 }
 
@@ -222,8 +224,8 @@ const TupleType* TupleType::toValueTuple(Context* context, bool makeConst) const
       allValue = false;
     allConst &= elementType(i).isConst();
     if (eltType.type() && eltType.type()->isTupleType()) {
-      // Conservatively throw off 'allValue' because the nested tuple might
-      // have a reference inside it.
+      // Conservatively throw off 'allValue' and 'allConst', because the nested
+      // tuple might have a reference or non-const element inside it.
       allValue = false;
       allConst = false;
     }
@@ -260,8 +262,8 @@ const TupleType* TupleType::toReferentialTuple(Context* context, bool makeConst)
     allConst &= elementType(i).isConst();
 
     if (eltType.type() && eltType.type()->isTupleType()) {
-      // Conservatively throw off 'allRef' because the nested tuple might
-      // have a reference inside it.
+      // Conservatively throw off 'allRef' and 'allConst', because the nested
+      // tuple might have a non-reference or non-const element inside it.
       allRef = false;
       allConst = false;
     }

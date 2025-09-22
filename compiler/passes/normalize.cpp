@@ -135,21 +135,7 @@ static TypeSymbol* expandTypeAlias(SymExpr* se);
 ************************************** | *************************************/
 
 static bool shouldSkipNormalizing(BaseAST* ast) {
-  if (auto sym = toSymbol(ast)) {
-    if (sym->hasFlag(FLAG_RESOLVED_EARLY)) return true;
-  }
-
-  if (auto t = toType(ast)) {
-    if (t->symbol->hasFlag(FLAG_RESOLVED_EARLY)) return true;
-  }
-
-  // Check to see if the AST is in a dyno-generated symbol.
-  auto mod = ast->getModule();
-  auto fn = ast->getFunction();
-  if (mod && mod->hasFlag(FLAG_RESOLVED_EARLY)) return true;
-  if (fn && fn->hasFlag(FLAG_RESOLVED_EARLY)) return true;
-
-  return false;
+  return ast->wasResolvedEarly();
 }
 
 static void handleSharedCArrays() {
@@ -288,6 +274,8 @@ void normalize() {
 
   // perform some checks on destructors
   forv_Vec(FnSymbol, fn, gFnSymbols) {
+    if (shouldSkipNormalizing(fn)) continue;
+
     if (fn->hasFlag(FLAG_DESTRUCTOR)) {
       if (fn->formals.length           <  2 ||
           fn->getFormal(1)->typeInfo() != gMethodToken->typeInfo()) {
@@ -571,6 +559,7 @@ static void handleModuleDeinitFn(ModuleSymbol* mod) {
 
     deinitFn->name = astr("chpl__deinit_", mod->name);
     deinitFn->removeFlag(FLAG_DESTRUCTOR);
+    deinitFn->addFlag(FLAG_MODULE_DEINIT);
   }
 }
 
@@ -687,14 +676,10 @@ static void transformLogicalShortCircuit() {
 
   // Collect the distinct stmts that contain logical AND/OR expressions
   for_alive_in_Vec(CallExpr, call, gCallExprs) {
-    if (call->primitive == 0) {
-      if (UnresolvedSymExpr* expr = toUnresolvedSymExpr(call->baseExpr)) {
-        if (strcmp(expr->unresolved, "&&") == 0 ||
-            strcmp(expr->unresolved, "||") == 0) {
-          // Don't normalize lifetime constraint clauses
-          if (isInLifetimeClause(call) == false)
-            stmts.insert(call->getStmtExpr());
-        }
+    if (TransformLogicalShortCircuit::shouldTransformCall(call)) {
+      // Don't normalize lifetime constraint clauses
+      if (isInLifetimeClause(call) == false) {
+        stmts.insert(call->getStmtExpr());
       }
     }
   }
@@ -766,6 +751,12 @@ static void insertCallTempsForRiSpecs(BaseAST* base) {
 
   for_vector(ForallStmt, fs, forallStmts) {
     for_shadow_vars(svar, temp, fs) {
+      if (svar->specBlock == nullptr)
+        continue;
+      // hoist the details, if any out of the ForallStmt
+      for (AList& sbody = svar->specBlock->body;
+           sbody.head != sbody.tail;
+           fs->insertBefore(sbody.head->remove()));
       if (CallExpr* specCall = toCallExpr(svar->reduceOpExpr())) {
         insertCallTempsWithStmt(specCall, fs);
       }
@@ -836,6 +827,7 @@ static void normalizeBase(BaseAST* base, bool addEndOfStatements) {
   for_vector(Symbol, symbol, symbols) {
     if (VarSymbol* var = toVarSymbol(symbol)) {
       DefExpr* defExpr = var->defPoint;
+      if (var->hasFlag(FLAG_RESOLVED_EARLY)) continue;
 
       if (FnSymbol* fn = toFnSymbol(defExpr->parentSymbol)) {
         if (fn == stringLiteralModule->initFn) {

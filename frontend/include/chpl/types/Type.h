@@ -45,20 +45,12 @@ namespace types {
 // forward declare the various Type subclasses
 // using macros and type-classes-list.h
 /// \cond DO_NOT_DOCUMENT
-#define TYPE_DECL(NAME) class NAME;
-#define TYPE_NODE(NAME) TYPE_DECL(NAME)
-#define BUILTIN_TYPE_NODE(NAME, CHPL_NAME_STR) TYPE_DECL(NAME)
-#define TYPE_BEGIN_SUBCLASSES(NAME) TYPE_DECL(NAME)
-#define TYPE_END_SUBCLASSES(NAME)
+#define TYPE_NODE(NAME) class NAME;
 /// \endcond
 // Apply the above macros to type-classes-list.h
-#include "chpl/types/type-classes-list.h"
-// clear the macros
-#undef TYPE_NODE
-#undef BUILTIN_TYPE_NODE
-#undef TYPE_BEGIN_SUBCLASSES
-#undef TYPE_END_SUBCLASSES
-#undef TYPE_DECL
+#include "chpl/types/type-classes-list-adapter.h"
+
+class IntParam;
 
 class Type;
 using PlaceholderMap = std::unordered_map<ID, const Type*>;
@@ -205,23 +197,13 @@ class Type {
   // define is__ methods for the various Type subclasses
   // using macros and type-classes-list.h
   /// \cond DO_NOT_DOCUMENT
-  #define TYPE_IS(NAME) \
+  #define TYPE_NODE(NAME) \
     bool is##NAME() const { \
       return typetags::is##NAME(this->tag_); \
     }
-  #define TYPE_NODE(NAME) TYPE_IS(NAME)
-  #define BUILTIN_TYPE_NODE(NAME, CHPL_NAME_STR) TYPE_IS(NAME)
-  #define TYPE_BEGIN_SUBCLASSES(NAME) TYPE_IS(NAME)
-  #define TYPE_END_SUBCLASSES(NAME)
   /// \endcond
   // Apply the above macros to type-classes-list.h
-  #include "chpl/types/type-classes-list.h"
-  // clear the macros
-  #undef TYPE_NODE
-  #undef BUILTIN_TYPE_NODE
-  #undef TYPE_BEGIN_SUBCLASSES
-  #undef TYPE_END_SUBCLASSES
-  #undef TYPE_IS
+  #include "chpl/types/type-classes-list-adapter.h"
 
   // Additional helper functions
   // Don't name these queries 'isAny...'.
@@ -230,6 +212,16 @@ class Type {
   // So, isAnyNumericType checks if the type is that builtin type 'numeric'.
   // In contrast, isNumericType checks to see if the type is one of the
   // numeric types.
+
+  /** returns true if this represents the c_array type. If it does, sets
+      outEltType and outSize to the element type and size of the c_array. */
+  bool isCArrayType(Context* context, const Type*& outEltType, const IntParam*& outSize) const;
+
+  /** returns true if this represents the _owned builtin record */
+  bool isOwnedRecordType() const;
+
+  /** returns true if this represents the _shared builtin record */
+  bool isSharedRecordType() const;
 
   /** returns true if this represents the string type */
   bool isStringType() const;
@@ -305,26 +297,16 @@ class Type {
   // using macros and type-classes-list.h
   // Note: these offer equivalent functionality to C++ dynamic_cast<DstType*>
   /// \cond DO_NOT_DOCUMENT
-  #define TYPE_TO(NAME) \
+  #define TYPE_NODE(NAME) \
     const NAME * to##NAME() const { \
       return this->is##NAME() ? (const NAME *)this : nullptr; \
     } \
     NAME * to##NAME() { \
       return this->is##NAME() ? (NAME *)this : nullptr; \
     }
-  #define TYPE_NODE(NAME) TYPE_TO(NAME)
-  #define BUILTIN_TYPE_NODE(NAME, CHPL_NAME_STR) TYPE_TO(NAME)
-  #define TYPE_BEGIN_SUBCLASSES(NAME) TYPE_TO(NAME)
-  #define TYPE_END_SUBCLASSES(NAME)
   /// \endcond
   // Apply the above macros to type-classes-list.h
-  #include "chpl/types/type-classes-list.h"
-  // clear the macros
-  #undef TYPE_NODE
-  #undef BUILTIN_TYPE_NODE
-  #undef TYPE_BEGIN_SUBCLASSES
-  #undef TYPE_END_SUBCLASSES
-  #undef TYPE_TO
+  #include "chpl/types/type-classes-list-adapter.h"
 
   /** Given a type 't', determine if 't' is "plain-old-data" (POD).
 
@@ -332,8 +314,8 @@ class Type {
       always considered to be POD, and no further evaluation takes
       place.
 
-      If 't' is the sync type, the single type, an atomic type, the
-      array type, or the domain type, then 't' is not POD.
+      If 't' is the sync type, an atomic type, the array type, or
+      the domain type, then 't' is not POD.
 
       If 't' is a class with 'owned' or 'shared' management, then 't'
       is not POD.
@@ -361,23 +343,15 @@ class Type {
   struct Dispatcher {
     static ReturnType doDispatch(const Type* t, Visitor& v) {
       switch (t->tag()) {
-        #define DISPATCH(NAME) \
+        #define TYPE_NODE(NAME) \
           case chpl::types::typetags::NAME: { \
             return v.visit((const chpl::types::NAME*) t); \
           }
-        #define TYPE_NODE(NAME) DISPATCH(NAME)
-        #define BUILTIN_TYPE_NODE(NAME, CHPL_NAME_STR) DISPATCH(NAME)
         // Do nothing, visitor should provide overloads for parent classes.
         #define TYPE_BEGIN_SUBCLASSES(NAME)
-        #define TYPE_END_SUBCLASSES(NAME)
         // Apply the above macros to type-classes-list.h
-        #include "chpl/types/type-classes-list.h"
-        // clear the macros
-        #undef TYPE_NODE
-        #undef BUILTIN_TYPE_NODE
-        #undef TYPE_BEGIN_SUBCLASSES
-        #undef TYPE_END_SUBCLASSES
-        #undef DISPATCH
+        #include "chpl/types/type-classes-list-adapter.h"
+
         default: break;
       }
 
@@ -389,24 +363,16 @@ class Type {
   struct Dispatcher<void, Visitor> {
     static void doDispatch(const Type* t, Visitor& v) {
       switch (t->tag()) {
-        #define DISPATCH(NAME) \
+        #define TYPE_NODE(NAME) \
           case chpl::types::typetags::NAME: { \
             v.visit((const chpl::types::NAME*) t); \
             return; \
           }
-        #define TYPE_NODE(NAME) DISPATCH(NAME)
-        #define BUILTIN_TYPE_NODE(NAME, CHPL_NAME_STR) DISPATCH(NAME)
         // Do nothing, visitor should provide overloads for parent classes.
         #define TYPE_BEGIN_SUBCLASSES(NAME)
-        #define TYPE_END_SUBCLASSES(NAME)
         // Apply the above macros to type-classes-list.h
-        #include "chpl/types/type-classes-list.h"
-        // clear the macros
-        #undef TYPE_NODE
-        #undef BUILTIN_TYPE_NODE
-        #undef TYPE_BEGIN_SUBCLASSES
-        #undef TYPE_END_SUBCLASSES
-        #undef DISPATCH
+        #include "chpl/types/type-classes-list-adapter.h"
+
         default: break;
       }
 
@@ -448,64 +414,19 @@ class Type {
 
 namespace detail {
 
-template <>
-inline bool typeIs<Type>(const Type* type) {
-  return true;
-}
+template <> inline bool typeIs<Type>(const Type* type) { return true; }
+template <> inline const Type* typeToConst<Type>(const Type* type) { return type; }
+template <> inline Type* typeTo<Type>(Type* type) { return type; }
+
 
 /// \cond DO_NOT_DOCUMENT
-#define TYPE_IS(NAME) \
-  template <> \
-  inline bool typeIs<NAME>(const Type* type) { \
-    return type->is##NAME(); \
-  }
-#define TYPE_NODE(NAME) TYPE_IS(NAME)
-#define BUILTIN_TYPE_NODE(NAME, CHPL_NAME_STR) TYPE_IS(NAME)
-#define TYPE_BEGIN_SUBCLASSES(NAME) TYPE_IS(NAME)
-#define TYPE_END_SUBCLASSES(NAME)
+#define TYPE_NODE(NAME) \
+  template <> inline bool typeIs<NAME>(const Type* type) { return type->is##NAME(); } \
+  template <> inline const NAME * typeToConst<NAME>(const Type* type) { return type->to##NAME(); } \
+  template <> inline NAME * typeTo<NAME>(Type* type) { return type->to##NAME(); } \
 /// \endcond
 // Apply the above macros to type-classes-list.h
-#include "chpl/types/type-classes-list.h"
-// clear the macros
-#undef TYPE_NODE
-#undef BUILTIN_TYPE_NODE
-#undef TYPE_BEGIN_SUBCLASSES
-#undef TYPE_END_SUBCLASSES
-#undef TYPE_IS
-
-template <>
-inline const Type* typeToConst<Type>(const Type* type) {
-  return type;
-}
-
-template <>
-inline Type* typeTo<Type>(Type* type) {
-  return type;
-}
-
-/// \cond DO_NOT_DOCUMENT
-#define TYPE_TO(NAME) \
-  template <> \
-  inline const NAME * typeToConst<NAME>(const Type* type) { \
-    return type->to##NAME(); \
-  } \
-  template <> \
-  inline NAME * typeTo<NAME>(Type* type) { \
-    return type->to##NAME(); \
-  }
-#define TYPE_NODE(NAME) TYPE_TO(NAME)
-#define BUILTIN_TYPE_NODE(NAME, CHPL_NAME_STR) TYPE_TO(NAME)
-#define TYPE_BEGIN_SUBCLASSES(NAME) TYPE_TO(NAME)
-#define TYPE_END_SUBCLASSES(NAME)
-/// \endcond
-// Apply the above macros to type-classes-list.h
-#include "chpl/types/type-classes-list.h"
-// clear the macros
-#undef TYPE_NODE
-#undef BUILTIN_TYPE_NODE
-#undef TYPE_BEGIN_SUBCLASSES
-#undef TYPE_END_SUBCLASSES
-#undef TYPE_TO
+#include "chpl/types/type-classes-list-adapter.h"
 
 } // end namespace detail
 

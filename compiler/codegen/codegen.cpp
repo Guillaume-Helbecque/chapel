@@ -32,6 +32,7 @@
 #include "config.h"
 #include "driver.h"
 #include "expr.h"
+#include "fcf-support.h"
 #include "files.h"
 #include "fixupExports.h"
 #include "insertLineNumbers.h"
@@ -149,7 +150,6 @@ const char* legalizeName(const char* name) {
       case '!': ret += "_EXCLAMATION_"; break;
       case '#': ret += "_POUND_";       break;
       case '?': ret += "_QUESTION_";    break;
-      case '$': ret += "_DOLLAR_";      break;
       case '~': ret += "_TILDE_";       break;
       case ':': ret += "_COLON_";       break;
       case '.': ret += "_DOT_";         break;
@@ -282,14 +282,7 @@ static void genGlobalRawString(const char *cname, std::string &value, size_t len
       auto globalStringIr = info->irBuilder->CreateGlobalString(value);
       trackLLVMValue(globalStringIr);
       llvm::Type* ty = nullptr;
-#if HAVE_LLVM_VER >= 140
       ty = globalStringIr->getValueType();
-#else
-#if HAVE_LLVM_VER >= 130
-      ty = llvm::cast<llvm::PointerType>(
-        globalStringIr->getType()->getScalarType())->getElementType();
-#endif
-#endif
       auto correctlyTypedValue = info->irBuilder->CreateConstInBoundsGEP2_32(
         ty, globalStringIr, 0, 0);
       trackLLVMValue(correctlyTypedValue);
@@ -332,6 +325,26 @@ genGlobalInt(const char* cname, int value, bool isHeader,
     globalInt->setInitializer(info->irBuilder->getInt32(value));
     globalInt->setConstant(isConstant);
     info->lvt->addGlobalValue(cname, globalInt, GEN_PTR, false, dtInt[INT_SIZE_32]);
+#endif
+  }
+}
+
+void codegenGlobalInt64(const char* cname, int64_t value, bool isHeader,
+                        bool isConstant) {
+  GenInfo* info = gGenInfo;
+  if( info->cfile ) {
+    if(isHeader)
+      fprintf(info->cfile, "extern const int64_t %s;\n", cname);
+    else
+    fprintf(info->cfile, "const int64_t %s = %" PRId64 ";\n", cname, value);
+  } else {
+#ifdef HAVE_LLVM
+    llvm::GlobalVariable *globalInt = llvm::cast<llvm::GlobalVariable>(
+        info->module->getOrInsertGlobal(
+          cname, llvm::IntegerType::getInt64Ty(info->module->getContext())));
+    globalInt->setInitializer(info->irBuilder->getInt64(value));
+    globalInt->setConstant(isConstant);
+    info->lvt->addGlobalValue(cname, globalInt, GEN_PTR, false, dtInt[INT_SIZE_64]);
 #endif
   }
 }
@@ -657,12 +670,14 @@ static void
 genFtable(std::vector<FnSymbol*> & fSymbols, bool isHeader) {
   GenInfo* info = gGenInfo;
 
+  // TODO: Change this to be 'void*' instead.
   const char* eltType = "chpl_fn_p";
-  const char* name = "chpl_ftable";
+  const char* name = ftableName;
 
   if (isHeader) {
     // Just pass NULL when generating header
     codegenGlobalConstArray(name, eltType, NULL, true);
+    codegenGlobalInt64(ftableSizeName, 0, true);
     return;
   }
 
@@ -692,14 +707,15 @@ genFtable(std::vector<FnSymbol*> & fSymbols, bool isHeader) {
     ftable.push_back(gen);
   }
 
-  // make sure ftable always contains at least 1 element
-  if (ftable.empty()) {
-    GenRet nullFn = codegenTypedNull(funcPtrType);
-    ftable.push_back(nullFn);
-  }
+  // Make sure there is a NULL sentinel at the end.
+  GenRet nullFn = codegenTypedNull(funcPtrType);
+  ftable.push_back(nullFn);
 
   // Now emit the global array declaration
   codegenGlobalConstArray(name, eltType, &ftable, false);
+
+  // Now emit the size
+  codegenGlobalInt64(ftableSizeName, ftable.size(), false);
 }
 
 static void
@@ -1621,7 +1637,8 @@ static void uniquify_names(std::set<const char*> & cnames,
   // collect types and apply canonical sort
   //
   forv_Vec(TypeSymbol, ts, gTypeSymbols) {
-    if (ts->defPoint->parentExpr != rootModule->block) {
+    if (ts->defPoint->parentExpr != rootModule->block ||
+        isFunctionType(ts->type)) {
       legalizeSymbolName(ts);
       types.push_back(ts);
     }
@@ -1794,15 +1811,73 @@ static void codegen_header(std::set<const char*> & cnames,
                            std::vector<VarSymbol*> & globals) {
   GenInfo* info = gGenInfo;
 
+  // Collected when considering both types and 'FnSymbol'.
+  std::unordered_set<FunctionType*> fnTypesToCodegen;
+
   //
-  // collect types and apply canonical sort
+  // Collect most types, but do not sort yet.
   //
   forv_Vec(TypeSymbol, ts, gTypeSymbols) {
-    if (ts->defPoint->parentExpr != rootModule->block) {
+    if (auto ft = toFunctionType(ts->type)) {
+      INT_ASSERT(fcfs::usePointerImplementation() || !ts->isUsed());
+
+      // Only function types used directly (e.g., in a cast operation)
+      // can be collected here. The rest have to be collected when
+      // functions are visited below.
+      if (!ft->symbol->isUsed()) continue;
+
+      if (auto it = fnTypesToCodegen.find(ft);
+               it == fnTypesToCodegen.end()) {
+        // TODO (dlongnecke): Rare case right now, so leave breakpoint...
+        debuggerBreakHere();
+        fnTypesToCodegen.emplace_hint(it, ft);
+        types.push_back(ts);
+      } else {
+        INT_FATAL(ts, "Type stored more than once in 'gTypeSymbols'!");
+      }
+
+    } else if (ts->defPoint->parentExpr != rootModule->block) {
       types.push_back(ts);
     }
   }
+
+  //
+  // Collect functions and function types, then sort them.
+  //
+  forv_Vec(FnSymbol, fn, gFnSymbols) {
+    // The function is not code-generated, so skip it.
+    if (!needsCodegenWrtGPU(fn)) continue;
+
+    // OK, should generate the function and consider its type.
+    functions.push_back(fn);
+
+    // Collect function types to generate. The vast majority are discarded.
+    // TODO (dlongnecke): Ensure that this flag is not stale...
+    bool isProcPtrRoot = fn->hasFlag(FLAG_FIRST_CLASS_FUNCTION_INVOCATION);
+    auto ft = toFunctionType(fn->type);
+
+    INT_ASSERT(!isProcPtrRoot || ft);
+
+    if (auto ft = toFunctionType(fn->type)) {
+      if (isProcPtrRoot || ft->symbol->isUsed()) {
+        // It is used or a root used to construct a value, so keep it.
+        if (auto it = fnTypesToCodegen.find(ft);
+                 it == fnTypesToCodegen.end()) {
+          fnTypesToCodegen.emplace_hint(it, ft);
+          types.push_back(ft->symbol);
+        }
+      } else {
+        // TODO (dlongnecke): Could be pruned/discarded earlier...
+        continue;
+      }
+    }
+  }
+
+  // Now we can sort types...
   std::sort(types.begin(), types.end(), compareSymbol);
+
+  // ...and functions.
+  std::sort(functions.begin(), functions.end(), compareSymbol);
 
   //
   // collect globals and apply canonical sort
@@ -1815,18 +1890,8 @@ static void codegen_header(std::set<const char*> & cnames,
       }
     }
   }
+
   std::sort(globals.begin(), globals.end(), compareSymbol);
-
-  //
-  // collect functions and apply canonical sort
-  //
-  forv_Vec(FnSymbol, fn, gFnSymbols) {
-    if (needsCodegenWrtGPU(fn)) {
-      functions.push_back(fn);
-    }
-  }
-  std::sort(functions.begin(), functions.end(), compareSymbol);
-
   codegen_header_compilation_config();
 
   if (fLibraryCompile) {
@@ -1866,6 +1931,14 @@ static void codegen_header(std::set<const char*> & cnames,
   genClassIDs(types, true);
   genSubclassArray(true);
   genClassNames(types, true);
+
+  // Generate procedure pointer types first to handle circular dependencies.
+  genComment("Procedure Pointer Types");
+  forv_Vec(TypeSymbol, ts, types) {
+    if (auto ft = toFunctionType(ts->type)) {
+      ft->codegenDef();
+    }
+  }
 
   genComment("Class Prototypes");
   forv_Vec(TypeSymbol, typeSymbol, types) {
@@ -1935,15 +2008,17 @@ static void codegen_header(std::set<const char*> & cnames,
   if(!info->cfile) {
 #ifdef HAVE_LLVM
     // Codegen any type annotations that are necessary.
-    // Start with primitive types in case they are referenced by
-    // records or classes.
-    forv_Vec(TypeSymbol, typeSymbol, gTypeSymbols) {
-      if (typeSymbol->defPoint->parentExpr == rootModule->block &&
-          isPrimitiveType(typeSymbol->type) &&
-          typeSymbol->hasLLVMType()) {
-        typeSymbol->codegenMetadata();
+    // Start with primitive types and function types in case they are used
+    // by records or classes.
+    forv_Vec(TypeSymbol, ts, gTypeSymbols) {
+      bool isInRootModule = ts->defPoint->parentExpr == rootModule->block;
+      if (isInRootModule && ts->hasLLVMType()) {
+        if (isPrimitiveType(ts->type) || isFunctionType(ts->type)) {
+          ts->codegenMetadata();
+        }
       }
     }
+
     forv_Vec(TypeSymbol, typeSymbol, types) {
       if (!isDecoratedClassType(typeSymbol->type))
         typeSymbol->codegenMetadata();
@@ -1966,6 +2041,7 @@ static void codegen_header(std::set<const char*> & cnames,
   for_vector(FnSymbol, fn2, functions) {
     if (fn2->hasFlag(FLAG_BEGIN_BLOCK) ||
         fn2->hasFlag(FLAG_COBEGIN_OR_COFORALL_BLOCK) ||
+        fn2->hasFlag(FLAG_FIRST_CLASS_FUNCTION_INVOCATION) ||
         fn2->hasFlag(FLAG_ON_BLOCK)) {
       ftableVec.push_back(fn2);
       ftableMap[fn2] = ftableVec.size()-1;
@@ -2165,10 +2241,10 @@ codegen_config() {
         fprintf(outfile,", /* private = */ %d", var->hasFlag(FLAG_PRIVATE));
         fprintf(outfile,", /* deprecated = */ %d",
                 var->hasFlag(FLAG_DEPRECATED));
-        fprintf(outfile,", \"%s\"\n", var->getDeprecationMsg());
+        fprintf(outfile,", \"%s\"\n", var->getSanitizedMsg(var->getDeprecationMsg()));
         fprintf(outfile,", /* unstable = */ %d",
                 var->hasFlag(FLAG_UNSTABLE));
-        fprintf(outfile,", \"%s\"\n", var->getUnstableMsg());
+        fprintf(outfile,", \"%s\"\n", var->getSanitizedMsg(var->getUnstableMsg()));
         fprintf(outfile,");\n");
 
       }
@@ -2244,9 +2320,9 @@ codegen_config() {
         }
         args[3] = info->irBuilder->getInt32(var->hasFlag(FLAG_PRIVATE));
         args[4] = info->irBuilder->getInt32(var->hasFlag(FLAG_DEPRECATED));
-        args[5] = genStringArg(var->getDeprecationMsg());
+        args[5] = genStringArg(var->getSanitizedMsg(var->getDeprecationMsg()));
         args[6] = info->irBuilder->getInt32(var->hasFlag(FLAG_UNSTABLE));
-        args[7] = genStringArg(var->getUnstableMsg());
+        args[7] = genStringArg(var->getSanitizedMsg(var->getUnstableMsg()));
 
         llvm::CallInst* callICF =
           info->irBuilder->CreateCall(installConfigFunc, args);
@@ -2294,13 +2370,29 @@ static const char* generateFileName(ChainHashMap<const char*, StringHashFns, int
   return name;
 }
 
+bool argRequiresCPtr(IntentTag intent, Type* t, bool isReceiver) {
+  /* This used to be true for INTENT_REF, but that is handled with the "_ref"
+     class and we don't need to generate a pointer for it directly */
+  if (isReceiver && is_complex_type(t)) return true;
+  return argMustUseCPtr(t);
+}
+
+bool argRequiresCPtr(ArgSymbol* formal) {
+  bool isReceiver = formal->hasFlag(FLAG_ARG_THIS);
+  return argRequiresCPtr(formal->intent, formal->type, isReceiver);
+}
+
+bool argRequiresCPtr(const FunctionType::Formal* formal) {
+  bool isReceiver = !strcmp(formal->name(), "this");
+  return argRequiresCPtr(formal->intent(), formal->type(), isReceiver);
+}
 
 static bool
 shouldChangeArgumentTypeToRef(ArgSymbol* arg) {
   FnSymbol* fn = toFnSymbol(arg->defPoint->parentSymbol);
 
   bool shouldPassRef = (arg->intent & INTENT_FLAG_REF) ||
-                       arg->requiresCPtr();
+                       argRequiresCPtr(arg);
 
   bool alreadyRef = arg->typeInfo()->symbol->hasFlag(FLAG_REF) ||
                     arg->isRef() ||
@@ -2565,6 +2657,61 @@ Type* getNamedTypeDuringCodegen(const char* name) {
   return NULL;
 }
 
+static std::unordered_map<FunctionType*, FunctionTypeCodegenInfo>
+chapelFunctionTypeToCodegenInfo;
+
+const FunctionTypeCodegenInfo& localFunctionTypeCodegenInfo(FunctionType* ft) {
+  // Memoize to reduce the amount of work we do. We use 'local' procedure
+  // pointer types as the key in order to elide away wideness entirely, as
+  // it doesn't matter here (always local).
+  //
+  auto ftLocal = ft->isLocal() ? ft : ft->getAsLocal();
+  auto it = chapelFunctionTypeToCodegenInfo.find(ftLocal);
+  if (it != chapelFunctionTypeToCodegenInfo.end()) return it->second;
+
+  FunctionTypeCodegenInfo info;
+
+  // Set the Chapel type to the local procedure type.
+  info.gen.chplType = ftLocal;
+
+  if (gGenInfo->cfile) {
+    // Assemble a string representing the function type in C.
+    auto& str = info.gen.c;
+
+    // E.g., 'void (*)(argt1, argt2, argt3)';
+    str += ft->returnType()->codegen().c;
+    str += " (*)(";
+
+    // NOTE: Omit the formal names because C does not require them.
+    for (int i = 0; i < ft->numFormals(); i++) {
+      const bool last = (i+1) == ft->numFormals();
+      auto formal = ft->formal(i);
+      INT_ASSERT(formal);
+
+      str += formal->type()->codegen().c;
+
+      if (!last) str += ", ";
+    }
+
+    // An empty formal list takes 'void' to make old C standards happy.
+    if (0 == ft->numFormals()) str += "void";
+
+    str += ")";
+
+  } else {
+  #ifdef HAVE_LLVM
+    // Generate the LLVM function info.
+    std::vector<const char*> argNames;
+    info.llvmType = codegenFunctionTypeLLVM(ft, info.llvmAttrs, argNames);
+    info.gen.type = info.llvmType;
+  #endif
+  }
+
+  // Insert the info into the map.
+  it = chapelFunctionTypeToCodegenInfo.emplace_hint(it, ftLocal, info);
+
+  return it->second;
+}
 
 // Do this once for CPU and GPU
 static void codegenPartOne() {
@@ -3074,17 +3221,21 @@ static void codegenPartTwo() {
       debug_info = new debug_data(*info->module);
     }
     if(debug_info) {
-      // first find the main module, this will be the compile unit.
+      // every module gets its own compile unit
       forv_Vec(ModuleSymbol, currentModule, allModules) {
-        if(currentModule->hasFlag(FLAG_MODULE_FROM_COMMAND_LINE_FILE)) {
-          //So, this is pretty quick. I'm assuming that the main module is in the current dir, no optimization (need to figure out how to get this)
-          // and no compile flags, since I can't figure out how to get that either.
-          const char *current_dir = "./";
-          const char *empty_string = "";
-          debug_info->create_compile_unit(currentModule->astloc.filename(), current_dir, false, empty_string);
-          break;
-        }
+        // So, this is pretty quick. I'm assuming that the main module is in the current dir, no optimization (need to figure out how to get this)
+        // and no compile flags, since I can't figure out how to get that either.
+        const char *current_dir = "./";
+        const char *empty_string = "";
+        debug_info->create_compile_unit(currentModule,
+          currentModule->astloc.filename(), current_dir,
+          false, empty_string
+        );
       }
+      debug_info->create_compile_unit(rootModule,
+        rootModule->astloc.filename(), "./",
+        false, ""
+      );
     }
 
     // When doing codegen for programs that have GPU kernels we fork the

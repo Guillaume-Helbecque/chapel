@@ -1806,12 +1806,6 @@ static void testInitGenericAfterConcrete() {
   }
 }
 
-static std::string toString(QualifiedType type) {
-  std::stringstream ss;
-  type.type()->stringify(ss, chpl::StringifyKind::CHPL_SYNTAX);
-  return ss.str();
-}
-
 static void testNilFieldInit() {
   std::string program = R"""(
     class C { var x: int; }
@@ -1819,6 +1813,33 @@ static void testNilFieldInit() {
       var x: unmanaged C?;
       proc init() {
         x = nil;
+      }
+    }
+
+    // exists to work around current lack of default-init at module scope
+    proc test() {
+      var x: R;
+      return x;
+    }
+    var a = test();
+    var b = new R();
+  )""";
+  Context* context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto vars = resolveTypesOfVariables(context, program, {"a", "b"});
+
+  assert(toString(vars["a"]) == "R");
+  assert(toString(vars["b"]) == "R");
+}
+
+static void testForwardingFieldInit() {
+  std::string program = R"""(
+    record Inner { proc foo() {} }
+    record R {
+      forwarding var x: Inner;
+      proc init() {
+        this.x = new Inner();
       }
     }
 
@@ -1906,6 +1927,7 @@ static void testGenericFieldInit() {
   {
     printf("one\n");
     std::string program = R"""(
+      operator =(ref lhs: int, const rhs: int) {}
       record G { type T; var x : T; }
 
       proc G.init=(other: this.type) {
@@ -1954,6 +1976,8 @@ static void testGenericFieldInit() {
   }
   {
     std::string program = R"""(
+      operator =(ref lhs: int, const rhs: int) {}
+      operator =(ref lhs: real, const rhs: real) {}
       record G { type T; var x : T; }
 
       proc G.init=(other: this.type) {
@@ -1995,6 +2019,7 @@ static void testGenericFieldInit() {
 static void testDefaultArgs() {
   {
     std::string program = R"""(
+      operator =(ref lhs: real, const rhs: real) {}
       class Parent {
         var x, y: real;
       }
@@ -2333,6 +2358,8 @@ int main() {
   testInitGenericAfterConcrete();
 
   testNilFieldInit();
+
+  testForwardingFieldInit();
 
   testGenericFieldInit();
 

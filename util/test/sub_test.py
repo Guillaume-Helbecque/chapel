@@ -146,7 +146,7 @@ import re
 import shlex
 import datetime
 import errno
-from functools import reduce
+from functools import reduce, cache
 import atexit
 
 def elapsed_sub_test_time():
@@ -316,6 +316,7 @@ def ReadFileWithComments(f, ignoreLeadingSpace=True, args=None):
             chpl_env = get_chplenv()
             file_env = os.environ.copy()
             file_env.update(chpl_env)
+            file_env["CHPLENV_SUPPRESS_WARNINGS"] = "1"
 
             # execute the file and grab its output
             tmp_args = [os.path.abspath(f)]
@@ -403,6 +404,9 @@ def cleanup(execname, test_ran_and_more_compopts=False):
                 os.unlink(execname)
             if os.path.isfile(execname+'_real'):
                 os.unlink(execname+'_real')
+            if os.path.exists(execname+'.dSYM'):
+                import shutil
+                shutil.rmtree(execname+'.dSYM')
             # Hopefully short term workaround on cygwin where we've been seeing
             # an issue where after a test is run, some other process has a
             # handle on the executable and we can't create a new executable
@@ -592,6 +596,14 @@ def FindGoodFile(basename, commExecNums=['']):
         # Else use the execopts-specific .good file.
         if not os.path.isfile(goodfile):
             goodfile=basename+commExecNum+'.good'
+
+        # look for a .dyno good file, and prefer it over the regular .good file
+        if '--dyno-resolve-only' in envCompopts:
+            if os.path.isfile(goodfile):
+                prefix = goodfile.removesuffix('.good')
+                dynogood=prefix+'.dyno.good'
+                if os.path.isfile(dynogood):
+                    goodfile = dynogood
 
     return goodfile
 
@@ -849,6 +861,7 @@ def main():
     # purpose. compileline will not work correctly in some configurations when run
     # outside of its directory tree.
     compileline = os.path.join(chpl_home, 'util', 'config', 'compileline')
+    @cache
     def run_compileline(flag, lookingfor):
         (returncode, result, _) = run_process([compileline, flag],
                                               stdout=subprocess.PIPE,
@@ -857,13 +870,6 @@ def main():
         if returncode != 0:
             Fatal('Cannot find ' + lookingfor)
         return result
-
-    c_compiler = run_compileline('--compile', 'c compiler')
-    cpp_compiler = run_compileline('--compile-c++', 'c++ compiler')
-    host_c_compiler = run_compileline('--host-c-compiler', 'host c compiler')
-    host_cpp_compiler = run_compileline('--host-cxx-compiler', 'host c++ compiler')
-    runtime_includes_and_defines = run_compileline('--includes-and-defines',
-                                                   'runtime includes and defines')
 
     # Use timedexec
     # As much as I hate calling out to another script for the time out stuff,
@@ -1035,12 +1041,12 @@ def main():
 
     globalLastcompopts=list()
     if os.access('./LASTCOMPOPTS',os.R_OK):
-        globalLastcompopts+=run_process(['cat', './LASTCOMPOPTS'], stdout=subprocess.PIPE)[1].strip().split()
+        globalLastcompopts+=ReadFileWithComments('./LASTCOMPOPTS')[0].strip().split()
     # sys.stdout.write('globalLastcompopts=%s\n'%(globalLastcompopts))
 
     globalLastexecopts=list()
     if os.access('./LASTEXECOPTS',os.R_OK):
-        globalLastexecopts+=run_process(['cat', './LASTEXECOPTS'], stdout=subprocess.PIPE)[1].strip().split()
+        globalLastexecopts+=ReadFileWithComments('./LASTCOMPOPTS')[0].strip().split()
     # sys.stdout.write('globalLastexecopts=%s\n'%(globalLastexecopts))
 
     if os.access(PerfDirFile('NUMLOCALES'),os.R_OK):
@@ -1211,14 +1217,24 @@ def main():
     #   or not this is a good idea, but preserving it for now for backwards
     #   compatibility.
     #
+    filename = None
     if (perftest and os.access(PerfDirFile('EXECOPTS'),os.R_OK)): # ./PERFEXECOPTS
-        tgeo=ReadFileWithComments(PerfDirFile('EXECOPTS'))
-        globalExecopts= shlex.split(tgeo[0])
+        filename = PerfDirFile('EXECOPTS')
     elif os.access('./EXECOPTS',os.R_OK):
-        tgeo=ReadFileWithComments('./EXECOPTS')
-        globalExecopts= shlex.split(tgeo[0])
+        filename = './EXECOPTS'
+    if filename is not None:
+        tgeo = ReadFileWithComments(filename)
+        if len(tgeo) >= 1:
+            globalExecopts = shlex.split(tgeo[0])
+            if len(tgeo) > 1:
+                sys.stdout.write(
+                    "[Warning: multiple lines of options in %s, only using the first one]\n"
+                    % filename
+                )
+        else:
+            globalExecopts = list()
     else:
-        globalExecopts=list()
+        globalExecopts = list()
     envExecopts = os.getenv('EXECOPTS')
     # sys.stdout.write('globalExecopts=%s\n'%(globalExecopts))
 
@@ -1458,12 +1474,10 @@ def main():
                     catfiles=execcatfiles
 
             elif (suffix=='.lastcompopts' and os.access(f, os.R_OK)):
-                lastcompopts+=run_process(['cat', f], stdout=subprocess.PIPE)[1].strip().split()
-                # sys.stdout.write("lastcompopts=%s\n"%(lastcompopts))
+                lastcompopts+=ReadFileWithComments(f)[0].strip().split()
 
             elif (suffix=='.lastexecopts' and os.access(f, os.R_OK)):
-                lastexecopts+=run_process(['cat', f], stdout=subprocess.PIPE)[1].strip().split()
-                # sys.stdout.write("lastexecopts=%s\n"%(lastexecopts))
+                lastexecopts+=ReadFileWithComments(f)[0].strip().split()
 
             elif (suffix==PerfSfx('numlocales') and os.access(f, os.R_OK)):
                 numlocales=ReadIntegerValue(f, localdir)
@@ -1684,13 +1698,17 @@ def main():
                 args = ['-o', test_filename]+shlex.split(compopts)+[testname]
                 cmd = None
                 if is_c_test:
-                    cmd = c_compiler
+                    cmd = run_compileline('--compile', 'c compiler')
                 elif is_ml_c_test:
+                    host_c_compiler = run_compileline('--host-c-compiler', 'host c compiler')
+                    runtime_includes_and_defines = run_compileline('--includes-and-defines', 'runtime includes and defines')
                     cmd_pieces = [host_c_compiler, runtime_includes_and_defines]
                     cmd = ' '.join(cmd_pieces)
                 elif is_cpp_test:
-                    cmd = cpp_compiler
+                    cmd = run_compileline('--compile-c++', 'c++ compiler')
                 elif is_ml_cpp_test:
+                    host_cpp_compiler = run_compileline('--host-cxx-compiler', 'host c++ compiler')
+                    runtime_includes_and_defines = run_compileline('--includes-and-defines', 'runtime includes and defines')
                     cmd_pieces = [host_cpp_compiler, runtime_includes_and_defines]
                     cmd = ' '.join(cmd_pieces)
             else:

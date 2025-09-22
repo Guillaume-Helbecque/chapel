@@ -1461,6 +1461,31 @@ static void test16h() {
       {AssociatedAction::DEINIT,       "M.test@4",   "x"},
     });
 }
+// performing a redundant cast to the same type (treated as 'in' intent) without copy elision
+static void test16i() {
+  testActions("test16i",
+    R""""(
+      module M {
+        record R { }
+        proc R.init() { }
+        proc R.init=(other: R) { }
+        operator R.=(ref lhs: R, rhs: R) { }
+        proc R.deinit() { }
+
+        proc test() {
+          var x: R;
+          var tmp = x : R;
+          x;
+        }
+      }
+    )"""",
+    {
+      {AssociatedAction::DEFAULT_INIT, "x",          ""},
+      {AssociatedAction::COPY_INIT,    "M.test@2",   ""},
+      {AssociatedAction::DEINIT,       "M.test@7",   "tmp"},
+      {AssociatedAction::DEINIT,       "M.test@7",   "x"},
+    });
+}
 
 // 'out' intent: formal not deinitialized (deinited at call site)
 static void test17a() {
@@ -1835,6 +1860,157 @@ static void test24() {
     });
 }
 
+// test that we don't invoke code after continue / break (including initializers)
+static void test25(const std::string& controlModifier) {
+  testActions("test25",
+    (
+    R"""(
+      module M {
+        record R { }
+        proc R.init() { }
+        proc R.deinit() { }
+        proc test() {
+          for i in 1..10 {
+            )""" + controlModifier + R"""(;
+            var x:R;
+          }
+        }
+      }
+    )""").c_str(), {
+      {AssociatedAction::ITERATE, "M.test@3", "" },
+    });
+}
+
+static void test25() {
+  test25("continue");
+  test25("break");
+}
+
+// test that we don't invoke code after continue / break (including initializers)
+static void test26(const std::string& controlModifier1, const std::string& controlModifier2, bool expectInit) {
+  Actions expectedActions = {{AssociatedAction::ITERATE, "M.test@3", "" }};
+  if (expectInit) {
+    expectedActions.push_back({AssociatedAction::DEFAULT_INIT, "x", ""});
+    expectedActions.push_back({AssociatedAction::DEINIT, "M.test@14", "x"});
+  }
+  testActions("test26",
+    (
+    R"""(
+      module M {
+        record R { }
+        proc R.init() { }
+        proc R.deinit() { }
+        proc test() {
+          for i in 1..10 {
+            var cond: bool;
+            if (cond) {
+              )""" + controlModifier1 + R"""(;
+            } else {
+              )""" + controlModifier2 + R"""(;
+            }
+            var x:R;
+          }
+        }
+      }
+    )""").c_str(), std::move(expectedActions));
+}
+
+static void test26() {
+  test26("continue", "continue", false);
+  test26("break", "break", false);
+  test26("continue", "", true);
+  test26("", "continue", true);
+  test26("break", "", true);
+  test26("", "break", true);
+
+  /* TODO: mixing control flow requires more intelligence.
+    test26("continue", "continue", false);
+    test26("break", "break", false);
+  */
+}
+
+// Copying then moving tuple
+static void test27() {
+  testActions("test27",
+    R""""(
+      module M {
+        record R { }
+        proc test() {
+          var r = new R();
+
+          var x = (1, r);
+          var y = x;
+        }
+      }
+    )"""",
+    {
+      {AssociatedAction::NEW_INIT,   "M.test@2",    ""},
+      {AssociatedAction::INIT_OTHER, "x",           ""},
+      {AssociatedAction::DEINIT,     "M.test@10",   "r"}
+    });
+}
+
+// Copying tuple twice
+static void test28() {
+  testActions("test28",
+    R""""(
+      module M {
+        record R { }
+        proc test() {
+          var r = new R();
+
+          var x = (1, r);
+          var y = x;
+          x;
+        }
+      }
+    )"""",
+    {
+      {AssociatedAction::NEW_INIT,   "M.test@2",    ""},
+      {AssociatedAction::INIT_OTHER, "x",           ""},
+      {AssociatedAction::COPY_INIT,  "y",           ""},
+      {AssociatedAction::DEINIT,     "M.test@11",   "r"}
+    });
+}
+
+// Creating reference to tuple, then copying from it
+static void test29() {
+  testActions("test29",
+    R""""(
+      module M {
+        record R { }
+        proc test() {
+          var r = new R();
+
+          const ref x = (1, r);
+          var y = x;
+          x;
+        }
+      }
+    )"""",
+    {
+      {AssociatedAction::NEW_INIT,   "M.test@2",    ""},
+      {AssociatedAction::INIT_OTHER, "y",           ""},
+      {AssociatedAction::DEINIT,     "M.test@11",   "r"}
+    });
+}
+
+// Returning a tuple expression (ref tuple) converted to value tuple
+static void test30() {
+  testActions("test30",
+    R""""(
+      module M {
+        record R { }
+        proc test(ref arg : R) {
+          return (1, arg);
+        }
+      }
+    )"""",
+    {
+      {AssociatedAction::INIT_OTHER, "M.test@5", ""},
+    });
+}
+
 // calling function with 'out' intent formal
 
 // calling functions with 'inout' intent formal
@@ -1909,6 +2085,7 @@ int main() {
   test16f();
   test16g();
   test16h();
+  test16i();
 
   test17a();
   test17b();
@@ -1932,6 +2109,14 @@ int main() {
   test23d();
 
   test24();
+
+  test25();
+  test26();
+
+  test27();
+  test28();
+  test29();
+  test30();
 
   return 0;
 }

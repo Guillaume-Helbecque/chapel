@@ -61,11 +61,7 @@
 #ifdef HAVE_LLVM
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/CommandLine.h"
-#if HAVE_LLVM_VER >= 140
 #include "llvm/MC/TargetRegistry.h"
-#else
-#include "llvm/Support/TargetRegistry.h"
-#endif
 #include "llvm/Support/TargetSelect.h"
 #endif
 
@@ -353,6 +349,9 @@ char stopAfterPass[128] = "";
 const char* compileCommandFilename = "compileCommand.tmp";
 const char* compileCommand = NULL;
 char compileVersion[64];
+
+std::array<std::string, 2> editions ({{"2.0", "preview"}});
+std::string fEdition = "2.0";
 
 static bool fPrintCopyright = false;
 static bool fPrintEnvHelp = false;
@@ -815,6 +814,116 @@ static int runDriverMakeBinaryPhase(int argc, char* argv[]) {
                             "invoking driver makeBinary phase");
 }
 
+bool isValidEdition(std::string maybeEdition) {
+  bool result = false;
+
+  for (auto e: editions) {
+    if (maybeEdition == e) {
+      result = true;
+    }
+  }
+
+  return result;
+}
+
+// Validate the editions provided.  Checks if both are actual known editions and
+// that first comes before last in the editions list.  Generates errors if not
+void checkEditionRangeValid(std::string first, std::string last, BaseAST* loc) {
+  int startLoc = -1;
+  int endLoc = -1;
+
+  for (size_t i = 0; i < editions.size(); i++) {
+    if (editions[i] == first) {
+      startLoc = i;
+    }
+
+    if (editions[i] == last) {
+      endLoc = i;
+    }
+  }
+
+  if (startLoc == -1) {
+    USR_FATAL_CONT(loc, "unknown first edition '%s'", first.c_str());
+    return;
+  }
+
+  if (endLoc == -1) {
+    USR_FATAL_CONT(loc, "unknown last edition '%s'", last.c_str());
+    return;
+  }
+
+  if (endLoc < startLoc) {
+    USR_FATAL_CONT(loc, "last edition '%s' is earlier than first edition '%s'",
+                   last.c_str(), first.c_str());
+  }
+}
+
+// Returns whether or not the compiled edition is in their range.
+// True if `first < compilerEdition < last`
+bool isEditionApplicable(std::string first, std::string last, BaseAST* loc) {
+  int startLoc = -1;
+  int endLoc = -1;
+  int thisEditionLoc = -1;
+
+  for (size_t i = 0; i < editions.size(); i++) {
+    if (editions[i] == first) {
+      startLoc = i;
+    }
+
+    if (editions[i] == last) {
+      endLoc = i;
+    }
+
+    if (editions[i] == fEdition) {
+      thisEditionLoc = i;
+    }
+  }
+
+  if (startLoc == -1) {
+    // Should have been handled when validating the edition range
+    INT_FATAL("unable to determine first edition");
+  }
+
+  if (endLoc == -1) {
+    // Should have been handled when validating the edition range
+    INT_FATAL("unable to determine last edition");
+  }
+
+  if (thisEditionLoc == -1) {
+    // Should have been handled when resolving the compiler flags
+    INT_FATAL("unable to determine location of compiler edition");
+  }
+
+  return startLoc <= thisEditionLoc && thisEditionLoc <= endLoc;
+}
+
+static void setEdition(const ArgumentDescription* desc, const char* arg) {
+  std::string val = std::string(arg);
+
+  if (val == "default") {
+    // Use the default edition, which is set at the declaration point
+
+  } else if (val == "pre-edition") {
+    USR_WARN("'pre-edition' has been renamed to 'preview'.  This option will "
+             "still be available for a few releases, but we recommend updating "
+             "to the new name.");
+    fEdition = editions.back();
+
+  } else if (!isValidEdition(val)) {
+    printf("--edition only accepts a limited set of values.  Current options");
+    printf(" are:\n");
+
+    printf("default (currently '%s')\n", fEdition.c_str());
+    // Iterate over all the edition names to list them
+    for (auto e: editions) {
+      printf("%s\n", e.c_str());
+    }
+    clean_exit(1);
+  } else {
+    fEdition = val;
+  }
+}
+
 static void runCompilerInGDB(int argc, char* argv[]) {
   const char* gdbCommandFilename = createDebuggerFile("gdb", argc, argv);
   const char* command = astr("gdb -q ", argv[0]," -x ", gdbCommandFilename);
@@ -1211,6 +1320,7 @@ static ArgumentDescription arg_desc[] = {
  {"print-search-dirs", ' ', NULL, "[Don't] print module search path", "N", &printSearchDirs, "CHPL_PRINT_SEARCH_DIRS", NULL},
 
  {"", ' ', NULL, "Warning and Language Control Options", NULL, NULL, NULL, NULL},
+ {"edition", ' ', "<edition>", "Specify the language edition to use", "S", NULL, NULL, &setEdition},
  {"permit-unhandled-module-errors", ' ', NULL, "Permit unhandled thrown errors; such errors halt at runtime", "N", &fPermitUnhandledModuleErrors, "CHPL_PERMIT_UNHANDLED_MODULE_ERRORS", NULL},
  {"warn-unstable", ' ', NULL, "Enable [disable] warnings for uses of language features that are in flux", "N", &fWarnUnstable, "CHPL_WARN_UNSTABLE", NULL},
  {"warnings", ' ', NULL, "Enable [disable] output of warnings", "n", &ignore_warnings, "CHPL_WARNINGS", NULL},
@@ -1329,6 +1439,7 @@ static ArgumentDescription arg_desc[] = {
  {"comm-substrate", ' ', "<conduit>", "Specify communication conduit", "S", NULL, "_CHPL_COMM_SUBSTRATE", setChplEnv},
  {"gasnet-segment", ' ', "<segment>", "Specify GASNet memory segment", "S", NULL, "_CHPL_GASNET_SEGMENT", setChplEnv},
  {"gmp", ' ', "<gmp-version>", "Specify GMP library", "S", NULL, "_CHPL_GMP", setChplEnv},
+ {"gpu", ' ', "<gpu>", "Specify the GPU vendor", "S", NULL, "_CHPL_GPU", setChplEnv},
  {"hwloc", ' ', "<hwloc-impl>", "Specify whether to use hwloc", "S", NULL, "_CHPL_HWLOC", setChplEnv},
  {"launcher", ' ', "<launcher-system>", "Specify how to launch programs", "S", NULL, "_CHPL_LAUNCHER", setChplEnv},
  {"lib-pic", ' ', "<pic>", "Specify whether to use position-dependent or position-independent code", "S", NULL, "_CHPL_LIB_PIC", setChplEnv},
@@ -1503,34 +1614,6 @@ static ArgumentDescription arg_desc[] = {
  {"io-serialize-writeThis", ' ', NULL, "Enable [disable] use of 'writeThis' as default for 'serialize' methods", "n", &fNoIOSerializeWriteThis, "CHPL_IO_SERIALIZE_WRITETHIS", NULL},
  {"io-deserialize-readThis", ' ', NULL, "Enable [disable] use of 'readThis' as default for 'deserialize' methods", "n", &fNoIODeserializeReadThis, "CHPL_IO_SERIALIZE_WRITETHIS", NULL},
  {"print-chpl-loc", ' ', NULL, "Print this executable's path and exit", "F", &fPrintChplLoc, NULL,NULL},
-  {0}
-};
-
-static DeprecatedArgument deprecated_args[] = {
-  {"CHPL_NO_CHECKS",
-    "The environment variable 'CHPL_NO_CHECKS' has been deprecated use 'CHPL_CHECKS' instead.",
-    "CHPL_CHECKS"
-  },
-  {"CHPL_NO_BOUNDS_CHECKING",
-   "The environment variable 'CHPL_NO_BOUNDS_CHECKING' has been deprecated use 'CHPL_BOUNDS_CHECKING instead.",
-   "CHPL_BOUNDS_CHECKING"
-  },
-  {"CHPL_NO_NIL_CHECKS",
-   "The environment variable 'CHPL_NO_NIL_CHECKS' has been deprecated use 'CHPL_NIL_CHECKS' instead.",
-   "CHPL_NIL_CHECKS"
-  },
-  {"CHPL_NO_CODEGEN",
-   "The environment variable 'CHPL_NO_CODEGEN' has been deprecated use 'CHPL_CODEGEN' instead.",
-   "CHPL_CODEGEN"
-  },
-  {"CHPL_NO_COMPILE_TIME_NIL_CHECKS",
-   "The environment variable 'CHPL_NO_COMPILE_TIME_NIL_CHECKS' has been deprecated use 'CHPL_COMPILE_TIME_NIL_CHECKS  instead.",
-   "CHPL_COMPILE_TIME_NIL_CHECKS"
-  },
-  {"CHPL_DISABLE_WARNINGS",
-   "The environment variable 'CHPL_DISABLE_WARNINGS' has been deprecated use 'CHPL_WARNINGS' instead.",
-   "CHPL_WARNINGS"
-  },
   {0}
 };
 
@@ -2101,12 +2184,30 @@ static void checkRuntimeBuilt(void) {
                 "$CHPL_HOME/util/printchplenv and request support for this "
                 "configuration.");
     } else {
-      USR_FATAL_CONT("The runtime has not been built for this configuration. "
-                     "Run $CHPL_HOME/util/chplenv/printchplbuilds.py for information "
-                     "on available runtimes.");
+      USR_FATAL_CONT("The runtime has not been built for this configuration.");
+
+      std::string buf = CHPL_HOME + "/util/printchplenv --diagnose-lib=runtime";
+      fflush(stdout); // make sure output is flushed before running subprocess
+      mysystem(buf.c_str(), "running printchplenv to diagnose missing runtime", false);
+
+      USR_PRINT("Run $CHPL_HOME/util/chplenv/printchplbuilds.py for more information on available runtimes.");
     }
     if (developer) {
       USR_PRINT("Expected runtime library in %s", runtime_dir.c_str());
+    }
+    USR_STOP();
+  }
+
+  std::string launcher_dir(CHPL_RUNTIME_LIB);
+  launcher_dir += "/";
+  launcher_dir += CHPL_LAUNCHER_SUBDIR;
+
+  if (strcmp(CHPL_LAUNCHER, "none") != 0 &&
+      !isDirectory(launcher_dir.c_str())) {
+    USR_FATAL_CONT("There is no CHPL_LAUNCHER=%s for the current configuration.",
+                   CHPL_LAUNCHER);
+    if (developer) {
+      USR_PRINT("Expected launcher library in %s", launcher_dir.c_str());
     }
     USR_STOP();
   }
@@ -2346,6 +2447,7 @@ static void dynoConfigureContext(std::string chpl_module_path) {
 
   chpl::parsing::setupModuleSearchPaths(gContext,
                                         CHPL_HOME,
+                                        "", //moduleRoot
                                         fMinimalModules,
                                         CHPL_LOCALE_MODEL,
                                         fEnableTaskTracking,
@@ -2404,7 +2506,7 @@ int main(int argc, char* argv[]) {
     init_args(&sArgState, argv[0], (void*)main);
 
     // Initialize the arguments for argument state.
-    init_arg_desc(&sArgState, arg_desc, deprecated_args);
+    init_arg_desc(&sArgState, arg_desc);
 
     initFlags();
     initAstrConsts();

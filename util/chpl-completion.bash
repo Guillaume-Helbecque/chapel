@@ -79,6 +79,7 @@ _chpl ()
 --dyno-timing \
 --dyno-verify-serialization \
 --early-deinit \
+--edition \
 --exit-leaks \
 --explain-call \
 --explain-call-id \
@@ -92,6 +93,7 @@ _chpl ()
 --gdb \
 --gen-ids \
 --gmp \
+--gpu \
 --gpu-arch \
 --gpu-block-size \
 --gpu-ptxas-enforce-optimization \
@@ -465,6 +467,7 @@ _chpl ()
 --div-by-zero-checks \
 --dynamic \
 --dynamic-auto-local-access \
+--edition \
 --explain-call \
 --explain-instantiation \
 --explain-verbose \
@@ -473,6 +476,7 @@ _chpl ()
 --formal-domain-checks \
 --gasnet-segment \
 --gmp \
+--gpu \
 --hdr-search-path \
 --help \
 --help-env \

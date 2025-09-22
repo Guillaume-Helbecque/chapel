@@ -238,6 +238,13 @@ def test_directory(test, test_type):
         else:
             dir = os.path.abspath(root)
 
+        # if the directory name ends with .dSYM, skip it
+        # if a parent directory is a .dSYM, skip it
+        if dir.endswith(".dSYM") or any(
+            e.endswith(".dSYM") for e in os.path.normpath(dir).split(os.sep)
+        ):
+            continue
+
         logger.write()
         logger.write("[Working on directory {0}]".format(root))
 
@@ -292,6 +299,7 @@ def test_directory(test, test_type):
                 skip_test = False
                 if os.path.isfile("SKIPIF"):
                     try:
+                        logger.write('[Checking SKIPIF]')
                         skip_test = process_skipif_output(run_command([test_env, "SKIPIF"]).strip())
                         # check output and skip if true
                         if skip_test == "1" or skip_test == "True":
@@ -304,7 +312,6 @@ def test_directory(test, test_type):
                 # skip this directory if there is a NOTEST file
                 if os.path.isfile(os.path.join(dir, "NOTEST")):
                     continue
-
 
         # run tests in directory
         # don't run if only doing performance graphs
@@ -354,7 +361,7 @@ def test_directory(test, test_type):
         else:
             with cd(dir):
                 # generate graphs for all testsin dir
-                    generate_graphs()
+                generate_graphs()
 
 
 def summarize():
@@ -1139,7 +1146,6 @@ def set_up_executables():
             chpl_system_preexec.append(preexec)
         os.environ["CHPL_SYSTEM_PREEXEC"] = ','.join(chpl_system_preexec)
 
-
     # pre-diff
     chpl_system_prediff = []
     if args.prediff:
@@ -1167,6 +1173,21 @@ def set_up_executables():
         prediff_for_ucx = os.path.join(util_dir, "test", "prediff-for-ucx")
         if prediff_for_ucx not in chpl_system_prediff:
             chpl_system_prediff.append(prediff_for_ucx)
+
+    # TODO: remove this when
+    # https://github.com/chapel-lang/chapel/issues/27262 is resolved
+    if 'darwin' == host_platform:
+        prediff_for_debug = os.path.join(util_dir, "test", "prediff-for-debug")
+        if prediff_for_debug not in chpl_system_prediff:
+            chpl_system_prediff.append(prediff_for_debug)
+
+    if ("qthreads" == chpl_tasks.get() and
+        "none" != chpl_sanitizers.get(flag="exe")):
+        prediff_for_qthreads_asan = os.path.join(
+            util_dir, "test", "prediff-for-qthreads-asan"
+        )
+        if prediff_for_qthreads_asan not in chpl_system_prediff:
+            chpl_system_prediff.append(prediff_for_qthreads_asan)
 
     if chpl_system_prediff:
         os.environ["CHPL_SYSTEM_PREDIFF"] = ','.join(chpl_system_prediff)

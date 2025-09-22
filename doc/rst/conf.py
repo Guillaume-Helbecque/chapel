@@ -114,7 +114,7 @@ def setup(app):
         app.connect('autodoc-process-signature', process_signature)
 
 # The suffix of source filenames.
-source_suffix = '.rst'
+source_suffix = {'.rst' : 'restructuredtext'}
 
 # The encoding of source files.
 # source_encoding = 'utf-8-sig'
@@ -132,12 +132,12 @@ master_doc = 'index'
 # 'version' adds a redundant version number onto the top of the sidebar
 # automatically (rtd-theme). We also don't use |version| anywhere in rst
 
-chplversion = '2.4'
+chplversion = '2.7'
 shortversion = chplversion.replace('-', '&#8209') # prevent line-break at hyphen, if any
 html_context = {"chplversion":chplversion}
 
 # The full version, including alpha/beta/rc tags.
-release = '2.4.0 (pre-release)'
+release = '2.7.0 (pre-release)'
 
 # General information about the project.
 project = u'Chapel Documentation'
@@ -182,12 +182,14 @@ exclude_patterns = ['Makefile',
                     'builtins/SharedObject.rst',
                     'builtins/String.rst',
                     'modules/standard/AutoMath.rst',
+                    'modules/standard/AutoGpu.rst',
                     'modules/standard/ChapelIO.rst',
                     'modules/standard/ChapelSysCTypes.rst',
 
                     # exclude the chapel-py files
                     'tools/chapel-py/chapel-py-api-template.rst',
                     'tools/chapel-py/chapel-py-api.rst',
+                    'tools/chplcheck/generated/rules.rst',
                    ]
 
 # The reST default role (used for this markup: `text`) to use for all
@@ -222,7 +224,6 @@ exclude_patterns = ['Makefile',
 if not on_rtd:
     import sphinx_rtd_theme
     html_theme = 'sphinx_rtd_theme'
-    html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
 
     html_theme_options = {
         'sticky_navigation': True,

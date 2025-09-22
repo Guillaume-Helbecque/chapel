@@ -3,35 +3,25 @@ Chapel Contributors
 
 The following people have contributed to Chapel releases:
 
-Contributors to the Chapel 2.3 release
+Contributors to the Chapel 2.6 release
 --------------------------------------
 * Jade Abraham, [HPE]
+* Subhramit Basu, individual contributor
 * [Dan Bonachea], [Lawrence Berkeley National Laboratory]
-* Paul Cassella, [HPE]
 * [Brad Chamberlain], [HPE]
-* Rui Chen, individual contributor
 * Soohoon Choi, [HPE]
-* Jeremiah Corrado, [HPE]
 * Lydia Duncan, [HPE]
 * Daniel Fedorin, [HPE]
 * Michael Ferguson, [HPE]
+* [Paul H. Hargrove], [Lawrence Berkeley National Laboratory]
 * Ben Harshbarger, [HPE]
-* John Hartman, [HPE]
 * Guillaume Helbecque, individual contributor
-* Ian Henriksen, [Sandia National Laboratories]
 * Engin Kayraklioglu, [HPE]
 * [Shreyas Khandekar], [HPE] (former intern from [University of Arizona])
 * Vassily Litvinov, [HPE]
 * David Longnecker, [HPE]
-* Ben McDonald, [HPE] (former intern from [Gonzaga University])
-* Josh Milthorpe, individual contributor, [ORNL], 
 * Brandon Neth, [HPE] (former intern from [University of Arizona])
-* Ahmad Rezaii, [HPE]
 * Anna Rift, [HPE]
-* Andy Stone, [HPE] (former [Cray Inc.] intern from [Colorado State University])
-* Michelle Mills Strout, [HPE]
-* Robin Voetter, individual contributor
-* Tim Zinsky, [HPE]
 
 Contributors to previous releases
 ---------------------------------
@@ -39,6 +29,7 @@ Contributors to previous releases
 * Sean Geronimo Anderson, [Cray Inc.] intern from [University of Minnesota]
 * Rafael Asenjo, [Universidad de Málaga (University of Malaga)]
 * Souris Ash, individual contributor
+* Shreyas Atre, individual contributor
 * Matthew Baker, [ORNL]
 * Steve Balensiefer, [University of Washington]
 * Casey Battaglino, [Cray Inc.] intern from [Georgia Tech]
@@ -56,7 +47,9 @@ Contributors to previous releases
 * John Byrne, [HPE]
 * Zixian Cai, individual contributor
 * David Callahan, [Cray Inc.]
+* Paul Cassella, [HPE]
 * Sanket Chaudhari, individual contributor
+* Rui Chen, individual contributor
 * Naman Chikara, individual contributor
 * R Chinmay, individual contributor
 * Sung-Eun Choi, [Cray Inc.]
@@ -64,6 +57,7 @@ Contributors to previous releases
 * Sarah Coghlan, [HPE]
 * Cristian-loan Condruz, individual contributor
 * Andrew Consroe, [HPE]
+* Jeremiah Corrado, [HPE]
 * Anway De, individual contributor
 * Steve Deitz, [Cray Inc.]
 * Laura Delaney, [Cray Inc.] intern from [Whitworth University]
@@ -78,16 +72,18 @@ Contributors to previous releases
 * Prasanth Duvvuri, [GSoC 2021] student from [Northeastern University] (former individual contributor)
 * Saliya Ekanayake, [Indiana University]
 * Omar Elawady, individual contributor
+* Emmanuel Ferdman, individual contributor
 * Luca Ferranti, individual contributor
 * Samuel Figueroa[*](#footnote), [Cray Inc.]
 * Roald Frederickx, individual contributor
 * Rahul Ghangas, [GSoC 2020] student from [Australian National University]
 * Alexey Gokhberg, [Unicorn Enterprises SA]
 * Piyush Gupta, individual contributor
-* [Paul H. Hargrove], [Lawrence Berkeley National Laboratory]
+* John Hartman, [HPE]
 * Akihiro Hayashi, [Rice University]
 * Hannah Hemmaplardh, [Cray Inc.] intern from [University of Washington]
 * Steven Hemmy, [Cray Inc.] intern from [University of Wisconsin]
+* Ian Henriksen, [Sandia National Laboratories]
 * Tom Hildebrandt, [Cray Inc.]
 * Shannon Hoffswell[*](#footnote), [Cray Inc.]
 * Samuel Howard, individual contributor
@@ -119,6 +115,7 @@ Contributors to previous releases
 * Priyank Lohariwal, individual contributor
 * Juan Lopez, [Universidad de Málaga (University of Malaga)]
 * Simon Lund, [Københavns Universitet (University of Copenhagen)]
+* Ben McDonald, [HPE] (former intern from [Gonzaga University])
 * Tom MacDonald, [Cray Inc.]
 * Deepak Majeti, individual contributor
 * Prabhanjan Mannari, individual contributor
@@ -127,10 +124,13 @@ Contributors to previous releases
 * Cory McCartan, [Cray Inc.] intern from Sammamish High School
 * Damian McGuckin, [Pacific Engineering Systems International]
 * Erin Melia, individual contributor
+* Audrey Mendez-Pratt, individual contributor (formerly [HPE])
+* Josh Milthorpe, individual contributor, [ORNL], 
 * Kyle Milz, individual contributor
 * Iain Moncrief, [HPE] intern from [Oregon State University]
 * Barry Moore, [University of Pittsburgh]
 * Fábio Malacco Moreira, individual contributor
+* Eduardo Morras, individual contributor
 * Sarthak Munshi, individual contributor / [GSoC 2017] student from [Pune Institute of Computer Technology]
 * Ram Nad, individual contributor
 * Mohammed Nafees, [GSoC 2019] student from [University of Waterloo]
@@ -153,12 +153,13 @@ Contributors to previous releases
 * Sriraj Paul, [Rice University]
 * Owen Plambeck, [Cray Inc.] intern from [Haverford College]
 * John Plevyak, [Cray Inc.] contractor
+* Amanda Potts, individual contributor
 * Parth Sarthi Prasad, individual contributor
 * Chris Stinson, individual contributor
 * Kumar Prasun, individual contributor
-* Audrey Pratt, [HPE]
 * Surya Priy, individual contributor
 * Lee Prokowich, [Cray Inc.]
+* Ahmad Rezaii, [HPE]
 * Elliot Ronaghan, [HPE]
 * David Qian, individual contributor
 * Yujia Qiao, individual contributor and [GSoC 2020] student from [Huazhong University of Science and Technology]
@@ -184,6 +185,8 @@ Contributors to previous releases
 * Srinivas Sridharan, [University of Notre Dame] / [ORNL]
 * Jenna Hoole Starkey, [HPE]
 * George Stelle, [Sandia National Laboratories]
+* Andy Stone, [HPE] (former [Cray Inc.] intern from [Colorado State University])
+* Michelle Mills Strout, [HPE]
 * Chris Swenson, individual contributor
 * [Kenjiro Taura], [University of Tokyo]
 * Chris Taylor, [DOD]
@@ -199,6 +202,7 @@ Contributors to previous releases
 * Thomas Van Doren, individual contributor / [Cray Inc.]
 * Varsha Verma, individual contributor
 * Branch Vincent, individual contributor
+* Robin Voetter, individual contributor
 * Chris Wailes, [Indiana University]
 * Tony Wallace, [Cray Inc.]
 * Vivian Wang, individual contributor, [GHC] 2022 Open Source Day
@@ -212,6 +216,7 @@ Contributors to previous releases
 * Tim Zakian, [Cray Inc.] intern from [Indiana University]
 * Vanessa Zambrano, [HPE]
 * Hui Zhang, [University of Maryland]
+* Tim Zinsky, [HPE]
 
 [Logo Design](https://chapel-lang.org/logo.html)
 ------------------------------------------------

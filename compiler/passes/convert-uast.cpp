@@ -168,6 +168,9 @@ struct Converter final : UastConverter {
   void setSymbolsToIgnore(std::unordered_set<chpl::ID> ignore) override {
     symbolsToIgnore.swap(ignore);
   }
+  void eraseSymbolToIgnore(chpl::ID ignore) override {
+    symbolsToIgnore.erase(ignore);
+  }
 
   void useModuleWhenConverting(const chpl::ID& modId, ModuleSymbol* modSym) override {
     modSyms[modId] = modSym;
@@ -184,10 +187,11 @@ struct Converter final : UastConverter {
 
   // general functions for converting
   Expr* convertAST(const uast::AstNode* node) override;
+  Expr* convertAST(const uast::AstNode* node, ModTag modTag) override;
 
   // methods to help track what has been converted
-  void noteConvertedSym(const uast::AstNode* ast, Symbol* sym);
-  void noteConvertedFn(const resolution::TypedFnSignature* sig, FnSymbol* fn);
+  void noteConvertedSym(const uast::AstNode* ast, Symbol* sym) override;
+  void noteConvertedFn(const resolution::TypedFnSignature* sig, FnSymbol* fn) override;
   Symbol* findConvertedSym(ID id, bool neverTrace=false);
   void noteIdentFixupNeeded(SymExpr* se, ID id);
   void noteModuleFixupNeeded(ModuleSymbol* m, ID id);
@@ -1711,23 +1715,12 @@ struct Converter final : UastConverter {
 
   /// Array, Domain, Range, Tuple ///
 
-  void convertArrayRow(const uast::ArrayRow* node, CallExpr* actualList) {
-    for (auto expr : node->exprs()) {
-      if (expr->isArrayRow()) {
-        convertArrayRow(expr->toArrayRow(), actualList);
-      } else {
-        actualList->insertAtTail(convertAST(expr));
-      }
-    }
-  }
-
   Expr* visit(const uast::Array* node) {
     CallExpr* actualList = new CallExpr(PRIM_ACTUALS_LIST);
     Expr* shapeList = nullptr;
     bool isAssociativeList = false;
 
-    bool isNDArray = node->numExprs() >= 1 && node->expr(0)->isArrayRow();
-    if (!isNDArray) {
+    if (!node->isMultiDim()) {
       for (auto expr : node->exprs()) {
         bool hasConvertedThisIter = false;
 
@@ -1763,13 +1756,13 @@ struct Converter final : UastConverter {
       }
       shapeList = new CallExpr("_build_tuple", shapeActualList);
 
-      for (auto expr : node->exprs()) {
-        convertArrayRow(expr->toArrayRow(), actualList);
+      for (auto expr : node->flattenedExprs()) {
+        actualList->insertAtTail(convertAST(expr));
       }
     }
 
     Expr* ret = nullptr;
-    if (!isNDArray) {
+    if (!node->isMultiDim()) {
       INT_ASSERT(shapeList == nullptr);
       if (isAssociativeList) {
         ret = new CallExpr("chpl__buildAssociativeArrayExpr", actualList);
@@ -2167,28 +2160,6 @@ struct Converter final : UastConverter {
     return new CallExpr(PRIM_TO_NILABLE_CLASS_CHECKED, expr);
   }
 
-  Expr* convertLogicalAndAssign(const uast::OpCall* node) {
-    if (node->op() != USTR("&&=")) return nullptr;
-
-    astlocMarker markAstLoc(node->id());
-
-    INT_ASSERT(node->numActuals() == 2);
-    Expr* lhs = convertAST(node->actual(0));
-    Expr* rhs = convertAST(node->actual(1));
-    return buildLAndAssignment(lhs, rhs);
-  }
-
-  Expr* convertLogicalOrAssign(const uast::OpCall* node) {
-    if (node->op() != USTR("||=")) return nullptr;
-
-    astlocMarker markAstLoc(node->id());
-
-    INT_ASSERT(node->numActuals() == 2);
-    Expr* lhs = convertAST(node->actual(0));
-    Expr* rhs = convertAST(node->actual(1));
-    return buildLOrAssignment(lhs, rhs);
-  }
-
   Expr* convertTupleAssign(const uast::OpCall* node) {
     if (node->op() != USTR("=") || node->numActuals() < 1
         || !node->actual(0)->isTuple()) return nullptr;
@@ -2236,10 +2207,6 @@ struct Converter final : UastConverter {
     } else if (auto conv = convertReduceAssign(node)) {
       ret = conv;
     } else if (auto conv = convertToNilableChecked(node)) {
-      ret = conv;
-    } else if (auto conv = convertLogicalAndAssign(node)) {
-      ret = conv;
-    } else if (auto conv = convertLogicalOrAssign(node)) {
       ret = conv;
     } else if (auto conv = convertTupleAssign(node)) {
       ret = conv;
@@ -2309,7 +2276,7 @@ struct Converter final : UastConverter {
     // Field multi-decl desugaring happens later in build.cpp and produces
     // different code; don't do redundant work here.
     bool isField = parsing::idIsField(context, node->id());
-    if (!isField) {
+    if (isField) {
       // post-parse checks should rule this out
       CHPL_ASSERT(!node->destination());
     }
@@ -3534,13 +3501,16 @@ struct Converter final : UastConverter {
       if (auto prevInitExpr = multiState->prevInitExpr) {
         Expr* replaceWith;
         if (prevInitExpr->isNoInitExpr()) {
-          replaceWith = prevInitExpr->copy();
+          // for remote variables, don't bother trying to replace 'noinit',
+          // since we already threw it away and selected a different overload of
+          // buildRemoteWrapper.
+          replaceWith = isRemote ? nullptr : prevInitExpr->copy();
         } else if (typeExpr) {
           replaceWith = new CallExpr("chpl__readXX", new SymExpr(varSym));
         } else {
           replaceWith = new SymExpr(varSym);
         }
-        multiState->replaceInitExpr(replaceWith);
+        if (replaceWith) multiState->replaceInitExpr(replaceWith);
         initExpr = prevInitExpr;
       }
 
@@ -3562,7 +3532,13 @@ struct Converter final : UastConverter {
       wrapperCall->insertAtTail(destinationExpr ? destinationExpr : new SymExpr(multiState->localeTemp));
 
       if (typeExpr) wrapperCall->insertAtTail(typeExpr);
-      if (initExpr) wrapperCall->insertAtTail(new CallExpr(PRIM_CREATE_THUNK, initExpr));
+      if (initExpr) {
+        if (initExpr->isNoInitExpr()) {
+          wrapperCall->insertAtTail(new SymExpr(dtVoid->symbol));
+        } else {
+          wrapperCall->insertAtTail(new CallExpr(PRIM_CREATE_THUNK, initExpr));
+        }
+      }
       auto wrapperDef = new DefExpr(wrapper, wrapperCall);
 
       auto wrapperGet = new CallExpr(".", new SymExpr(wrapper), new_CStringSymbol("get"));
@@ -3610,6 +3586,7 @@ struct Converter final : UastConverter {
   Expr* visit(const uast::Variable* node) {
     auto isTypeVar = node->kind() == uast::Variable::TYPE;
     auto stmts = new BlockStmt(BLOCK_SCOPELESS);
+    if (symbolsToIgnore.count(node->id()) != 0) return nullptr;
 
     auto info = convertVariable(node, true);
     INT_ASSERT(info.entireExpr && info.variableDef);
@@ -3662,6 +3639,11 @@ struct Converter final : UastConverter {
   }
 
   Expr* visit(const uast::Enum* node) {
+    if (auto it = syms.find(node->id()); it != syms.end()) {
+      // Sometimes in the typed converter we manually convert untyped AST
+      // to use as a base for instantiation. E.g., dtCPointer
+      return nullptr;
+    }
     const resolution::ResolutionResultByPostorderID* resolved = nullptr;
     if (shouldScopeResolve(node)) {
       resolved = &resolution::scopeResolveEnum(context, node->id());
@@ -3775,6 +3757,11 @@ struct Converter final : UastConverter {
   }
 
   Expr* convertAggregateDecl(const uast::AggregateDecl* node) {
+    if (auto it = syms.find(node->id()); it != syms.end()) {
+      // Sometimes in the typed converter we manually convert untyped AST
+      // to use as a base for instantiation. E.g., dtCPointer
+      return it->second->defPoint->remove();
+    }
 
     const resolution::ResolutionResultByPostorderID* resolved = nullptr;
     if (shouldScopeResolve(node)) {
@@ -3847,8 +3834,47 @@ struct Converter final : UastConverter {
 
 /// Generic conversion calling the above functions ///
 Expr* Converter::convertAST(const uast::AstNode* node) {
+  bool emptyModStack = modStack.empty();
+  ID modId;
+  if (emptyModStack) {
+    // This might happen if 'convertAST' is called by the typed converter,
+    // and we have not set a module.
+    modId = parsing::idToParentModule(context, node->id());
+    UniqueString unused;
+    bool isFromLibraryFile = context->moduleIsInLibrary(node->id(), unused);
+    auto modNode = parsing::idToAst(context, modId)->toModule();
+    this->modStack.push_back(ModStackEntry(modNode, isFromLibraryFile));
+  } else if (fVerify) {
+    auto modId = parsing::idToParentModule(context, node->id());
+    INT_ASSERT(modStack.back().mod->id() == modId);
+  }
+
   astlocMarker markAstLoc(node->id());
-  return node->dispatch<Expr*>(*this);
+  auto ret = node->dispatch<Expr*>(*this);
+
+  if (emptyModStack) {
+    auto mod = modSyms[modId];
+    for (auto usedMod : modStack.back().usedModules) {
+      mod->moduleUseAdd(usedMod);
+    }
+    for (auto modId : modStack.back().usedModuleIds) {
+      noteModuleFixupNeeded(mod, modId);
+    }
+    modStack.pop_back();
+  }
+
+  return ret;
+}
+
+/// Calls convertAST with a specific modTag
+Expr* Converter::convertAST(const uast::AstNode* node, ModTag modTag) {
+  auto prev = topLevelModTag;
+  topLevelModTag = modTag;
+
+  auto ret = convertAST(node);
+
+  topLevelModTag = prev;
+  return ret;
 }
 
 static std::string astName(const uast::AstNode* ast) {

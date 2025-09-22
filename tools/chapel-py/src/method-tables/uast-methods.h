@@ -272,6 +272,12 @@ CLASS_BEGIN(Include)
                bool, return node->isPrototype())
   PLAIN_GETTER(Include, visibility, "Get the visibility of this Include node",
                const char*, return Decl::visibilityToString(node->visibility()))
+  PLAIN_GETTER(Include, to_node, "Get the AST node that this Include node refers to",
+               Nilable<const chpl::uast::AstNode*>, return nodeOrNullFromToId(context, node))
+  PLAIN_GETTER(Include, name_location, "Get the location of the name in this Include node",
+               std::optional<chpl::Location>,
+               auto loc = chpl::parsing::locateIncludeNameWithAst(context, node);
+               return getValidLocation(loc))
 CLASS_END(Include)
 
 CLASS_BEGIN(Init)
@@ -616,6 +622,14 @@ CLASS_END(Interface)
 CLASS_BEGIN(Module)
   PLAIN_GETTER(Module, kind, "Get the kind of this Module node",
                const char*, return Module::moduleKindToString(node->kind()))
+  PLAIN_GETTER(Module, find_test_functions,
+               "Get all of the UnitTest functions in this Module",
+               std::vector<const chpl::uast::Function*>,
+               return findTestFunctionsForModule(context, node))
+  PLAIN_GETTER(Module, find_unittest_main,
+               "Find the call to UnitTest.main in this module, if any",
+               Nilable<const chpl::uast::FnCall*>,
+               return findUnitTestMainForModule(context, node))
 CLASS_END(Module)
 
 CLASS_BEGIN(ReduceIntent)
@@ -633,6 +647,11 @@ CLASS_BEGIN(VarLikeDecl)
   PLAIN_GETTER(VarLikeDecl, intent, "Get the intent for this VarLikeDecl node",
                const char*, return intentToString(node->storageKind()))
 CLASS_END(VarLikeDecl)
+
+CLASS_BEGIN(Formal)
+  PLAIN_GETTER(Formal, is_this, "Check if this Formal node is a 'this' formal",
+               bool, return node->name() == USTR("this"))
+CLASS_END(Formal)
 
 CLASS_BEGIN(VarArgFormal)
   PLAIN_GETTER(VarArgFormal, count, "Get the count expression of this VarArgFormal node",

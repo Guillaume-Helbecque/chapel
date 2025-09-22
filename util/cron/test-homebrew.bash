@@ -14,6 +14,8 @@ source $UTIL_CRON_DIR/common-tarball.bash
 # Tell gen_release to use existing repo instead of creating a new one with
 # git-archive.
 export CHPL_GEN_RELEASE_NO_CLONE=true
+# skip docs build for a faster tarball
+export CHPL_GEN_RELEASE_SKIP_DOCS=true
 
 export CHPL_LLVM=none
 # $UTIL_CRON_DIR/common.bash sets this to none, but Homebrew builds with native
@@ -28,6 +30,7 @@ cd $CHPL_HOME
 
 # Create a tarball from current repo.
 # The tarball is left in root of repo in tar/ directory.
+short_version=$(get_short_version)
 gen_release $short_version
 
 cp ${CHPL_HOME}/util/packaging/homebrew/chapel-main.rb  ${CHPL_HOME}/util/packaging/homebrew/chapel.rb
@@ -53,12 +56,15 @@ sed_command="sed -i.bak -e "
 $sed_command "s#url.*#url \"file\:///$location\"#" chapel.rb
 $sed_command "1s/sha256.*/sha256 \"$sha256\"/;t" -e "1,/sha256.*/s//sha256 \"$sha256\"/" chapel.rb
 
+log_info "Chapel formula to be tested:"
+cat chapel.rb
+
 # Test if homebrew install using the chapel formula works.
 brew upgrade
 brew uninstall --force chapel
 # Remove the cached chapel tar file before running brew install --build-from-source chapel.rb
 rm $HOME/Library/Caches/Homebrew/downloads/*--chapel-${short_version}.tar.gz
-HOMEBREW_NO_INSTALL_FROM_API=1 brew install -v --build-from-source chapel.rb
+HOMEBREW_DEVELOPER=1 HOMEBREW_NO_INSTALL_FROM_API=1 brew install -v --build-from-source ./chapel.rb
 INSTALL_STATUS=$?
     if [ $INSTALL_STATUS -ne 0 ]
     then

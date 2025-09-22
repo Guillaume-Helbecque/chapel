@@ -195,7 +195,7 @@ void trace_remove(BaseAST* ast, char flag) {
   }
   if (ast->id == breakOnRemoveID) {
     if (deletedIdON() == true) fflush(deletedIdHandle);
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
   // There should never be an attempt to delete a global type.
   if (flag != 'z' && // At least, not before compiler shutdown.
@@ -232,7 +232,6 @@ static void clean_modvec(Vec<ModuleSymbol*>& modvec) {
 }
 
 void cleanAst() {
-
   std::vector<Type*> keysToRm;
 
   for (auto it = serializeMap.begin() ; it != serializeMap.end() ; it++) {
@@ -344,7 +343,7 @@ int lastNodeIDUsed() {
 // BaseAST instance in gdb.
 static void checkid(int id) {
   if (id == breakOnID) {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
 }
 
@@ -409,6 +408,25 @@ ModuleSymbol* BaseAST::getModule() {
   }
 
   return retval;
+}
+
+bool BaseAST::wasResolvedEarly() {
+  if (auto sym = toSymbol(this)) {
+    if (sym->hasFlag(FLAG_RESOLVED_EARLY)) {
+      INT_ASSERT(!isModuleSymbol(sym));
+      return true;
+    }
+  }
+
+  if (auto t = toType(this)) {
+    if (t->symbol->hasFlag(FLAG_RESOLVED_EARLY)) return true;
+  }
+
+  // Check to see if the AST is in a dyno-generated function symbol.
+  auto fn = this->getFunction();
+  if (fn && fn->hasFlag(FLAG_RESOLVED_EARLY)) return true;
+
+  return false;
 }
 
 bool BaseAST::isRef() {

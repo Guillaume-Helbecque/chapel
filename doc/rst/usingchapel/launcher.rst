@@ -74,6 +74,7 @@ pbs-gasnetrun_ibv        GASNet launcher for PBS (qsub) and the Infiniband subst
 slurm |-| gasnetrun_ibv  GASNet launcher for SLURM and the Infiniband substrate
 slurm |-| gasnetrun_mpi  GASNet launcher for SLURM and the MPI substrate
 slurm |-| gasnetrun_ofi  GASNet launcher for SLURM and the OFI substrate
+slurm |-| gasnetrun_ucx  GASNet launcher for SLURM and the UCX substrate
 slurm-srun               native SLURM launcher
 smp                      GASNet launcher for the shared-memory substrate
 none                     do not use a launcher
@@ -89,7 +90,24 @@ If ``CHPL_LAUNCHER`` is left unset, a default is picked as follows:
 * if ``CHPL_COMM`` is gasnet and ``CHPL_COMM_SUBSTRATE`` is udp
   ``CHPL_LAUNCHER`` is set to amudprun
 
-* otherwise, if ``CHPL_TARGET_PLATFORM`` is cray-xc or hpe-cray-ex:
+* otherwise, if ``CHPL_COMM`` is gasnet and ``CHPL_COMM_SUBSTRATE`` is smp
+  ``CHPL_LAUNCHER`` is set to smp
+
+* otherwise, if ``CHPL_COMM`` is gasnet:
+
+  =======================  ==============================================
+  If                       CHPL_LAUNCHER
+  =======================  ==============================================
+  CHPL_COMM_SUBSTRATE=ibv  [slurm-]gasnetrun_ibv
+  CHPL_COMM_SUBSTRATE=mpi  [slurm-]gasnetrun_mpi
+  CHPL_COMM_SUBSTRATE=ucx  [slurm-]gasnetrun_ucx
+  CHPL_COMM_SUBSTRATE=ofi  [slurm-]gasnetrun_ofi
+  =======================  ==============================================
+
+  If salloc is in the user's path, then the slurm version of these launchers
+  will be used. Otherwise, the base ``gasnetrun_*`` launcher is used.
+
+* otherwise, if ``CHPL_TARGET_PLATFORM`` is a HPE system or a Cray system:
 
   ==================================  ===================================
   If                                  CHPL_LAUNCHER
@@ -100,29 +118,8 @@ If ``CHPL_LAUNCHER`` is left unset, a default is picked as follows:
   otherwise                           none
   ==================================  ===================================
 
-* otherwise, if ``CHPL_TARGET_PLATFORM`` is cray-cs and ``CHPL_COMM`` is gasnet and
-  salloc is in the user's path:
-
-  =======================  ==============================================
-  If                       CHPL_LAUNCHER
-  =======================  ==============================================
-  CHPL_COMM_SUBSTRATE=ibv  slurm-gasnetrun_ibv
-  CHPL_COMM_SUBSTRATE=mpi  slurm-gasnetrun_mpi
-  =======================  ==============================================
-
-* otherwise, if ``CHPL_TARGET_PLATFORM`` is cray-cs and srun is in the users path
+* otherwise, if ``CHPL_COMM`` is not none and srun is in the user's path, then 
   ``CHPL_LAUNCHER`` is set to slurm-srun
-
-* otherwise, if ``CHPL_COMM`` is gasnet:
-
-  =======================  ==============================================
-  If                       CHPL_LAUNCHER
-  =======================  ==============================================
-  CHPL_COMM_SUBSTRATE=ibv  gasnetrun_ibv
-  CHPL_COMM_SUBSTRATE=mpi  gasnetrun_mpi
-  CHPL_COMM_SUBSTRATE=smp  smp
-  otherwise                none
-  =======================  ==============================================
 
 * otherwise ``CHPL_LAUNCHER`` is set to none
 
@@ -255,7 +252,10 @@ Common Slurm Settings
   environment variable ``CHPL_LAUNCHER_SLURM_OUTPUT_FILENAME`` can be used
   to specify a different filename for the output.
 
-* Optionally, you can specify the number of GPUs required per node using either the environment variable ``CHPL_LAUNCHER_GPUS_PER_NODE`` or the ``--gpus-per-node`` flag. For example, to request 2 GPUs per node for all runs, set:
+* Optionally, you can specify the number of GPUs required per node using either
+  the environment variable ``CHPL_LAUNCHER_GPUS_PER_NODE`` or the
+  ``--gpus-per-node`` flag. For example, to request 2 GPUs per node for all
+  runs, set:
 
   .. code-block:: bash
 
@@ -266,6 +266,32 @@ Common Slurm Settings
   .. code-block:: bash
 
     ./myprogram --gpus-per-node=2
+
+* Optionally, you can specify the number of cores required per locale using either
+  the environment variable ``CHPL_LAUNCHER_CORES_PER_LOCALE``. For example,
+  to request at least 16 cores per locale, set:
+
+  .. code-block:: bash
+
+    export CHPL_LAUNCHER_CORES_PER_LOCALE=16
+
+  However, note that this is passed directly to slurm as ``--cpus-per-task``,
+  which treats multiple hardware threads (SMT) as separate CPUs. So for example,
+  to give the Chapel runtime access to all available processing units on a 64 core node with 2 hardware threads per core, set:
+
+  .. code-block:: bash
+
+    export CHPL_LAUNCHER_CORES_PER_LOCALE=128
+
+  Note that this only makes the resources available to the Chapel runtime, but by default Chapel will only use one hardware thread per core.
+
+* Optionally, you can specify wall clock time limit for the job using
+  ``CHPL_LAUNCHER_WALLTIME``. For example to specify a 10-minute time limit,
+  set:
+
+  .. code-block:: bash
+
+    export CHPL_LAUNCHER_WALLTIME=00:10:00
 
 .. _ssh-launchers-with-slurm:
 
@@ -323,6 +349,25 @@ To run this job, use:
 and when it completes, the output will be available in `job.output` as
 specified in `job.bash`.
 
+Troubleshooting with Slurm
+**************************
+
+I'm seeing srun errors like `Memory required by task is not available`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When using the ``slurm-srun`` launcher, you may see errors like this
+(especially on HPE Cray EX systems):
+
+.. code-block::
+
+   srun: error: Unable to allocate resources: Memory required by task is not available
+
+If you are seeing this error, try setting the following environment variable:
+
+.. code-block:: bash
+
+  export CHPL_LAUNCHER_MEM=unset
+
 Changing the _real binary suffix
 ++++++++++++++++++++++++++++++++
 
@@ -331,6 +376,29 @@ launcher to execute, the suffix of the real binary executed by the
 launcher may be changed with the ``CHPL_LAUNCHER_SUFFIX`` environment
 variable. If this variable is unset, the suffix defaults to "_real",
 matching the compiler's output.
+
+Changing the created job name
++++++++++++++++++++++++++++++
+
+The name of the job created by the launcher can be changed by setting
+the ``CHPL_LAUNCHER_JOB_NAME`` and ``CHPL_LAUNCHER_JOB_PREFIX``
+environment variables.
+
+* ``CHPL_LAUNCHER_JOB_NAME`` sets the name of the job, which is typically used
+  by the queueing system to identify the job. If this variable is unset, the
+  default is executable name, up to the first 10 characters. Note that even if
+  this variable is set, only the first 10 characters will be used.
+
+* ``CHPL_LAUNCHER_JOB_PREFIX`` sets a prefix for the job name. If this variable
+  is unset, the default is "CHPL-". This prefix is prepended to the job name
+  (either the default or the value of ``CHPL_LAUNCHER_JOB_NAME``) to form the
+  final job name.
+
+For example, to set the job name to "myprefix-myjob", you can set:
+.. code-block:: bash
+
+  export CHPL_LAUNCHER_JOB_PREFIX=myprefix-
+  export CHPL_LAUNCHER_JOB_NAME=myjob
 
 
 Bypassing the launcher

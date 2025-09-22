@@ -186,8 +186,10 @@ static void propagate_environment(char** buf, int* charsWritten)
   // We could do this more selectively, but we would be likely
   // to leave out something important.
   char *enviro_keys = chpl_get_enviro_keys(',');
-  if (enviro_keys)
+  if (enviro_keys) {
     chpl_append_to_cmd(buf, charsWritten, " -E '%s'", enviro_keys);
+    chpl_mem_free(enviro_keys, 0, 0);
+  }
 }
 
 static char* chpl_launch_create_command(int argc, char* argv[],
@@ -319,7 +321,7 @@ static char* chpl_launch_create_command(int argc, char* argv[],
 
     fclose(slurmFile);
     chmod(slurmFilename, 0755);
-    char* format="sbatch %s\n";
+    const char* format="sbatch %s\n";
     int baseCommandLen = strlen(slurmFilename) + strlen(format);
     baseCommand = (char*)chpl_mem_allocMany(baseCommandLen, sizeof(char),
                                             CHPL_RT_MD_COMMAND_BUFFER, -1, 0);
@@ -352,7 +354,7 @@ static char* chpl_launch_create_command(int argc, char* argv[],
     for (i=1; i<argc; i++) {
       chpl_append_to_cmd(&iCom, &len, " '%s'", argv[i]);
     }
-    char* format = "salloc %s";
+    const char* format = "salloc %s";
     int baseCommandLen = strlen(format) + len + 1;
     baseCommand = (char*)chpl_mem_allocMany(baseCommandLen, sizeof(char),
                                             CHPL_RT_MD_COMMAND_BUFFER, -1, 0);
@@ -389,11 +391,11 @@ int chpl_launch(int argc, char* argv[], int32_t numLocales,
 
   debug = getenv("CHPL_LAUNCHER_DEBUG");
 
-  retcode = chpl_launch_using_system(chpl_launch_create_command(argc, argv,
-                                          numLocales, numLocalesPerNode),
-            argv[0]);
+  char* command = chpl_launch_create_command(argc, argv, numLocales, numLocalesPerNode);
+  retcode = chpl_launch_using_system(command, argv[0]);
   chpl_launch_cleanup();
   chpl_mem_free(slurmFilename, 0, 0);
+  chpl_mem_free(command, 0, 0);
   return retcode;
 }
 

@@ -18,10 +18,12 @@
  */
 
 #include "resolution.h"
+#include "chpl/resolution/can-pass.h"
 #include "chpl/parsing/parsing-queries.h"
 #include "chpl/resolution/scope-queries.h"
 #include "chpl/resolution/resolution-queries.h"
 #include "chpl/framework/query-impl.h"
+#include "chpl/types/ClassType.h"
 #include "chpl/uast/all-uast.h"
 
 using namespace chpl;
@@ -148,8 +150,17 @@ scopeResolveViaEnum(Context* context, const AstNode* enumNode, const AstNode* no
   return nullptr;
 }
 
+static const ID scopeResolveViaInclude(Context* context,
+                                 const AstNode* includeNode,
+                                 const AstNode* node) {
+  if (auto include = includeNode->toInclude())
+    if (auto submodule = parsing::getIncludedSubmodule(context, include->id()))
+      return submodule->id();
+  return ID();
+}
+
 // For scope resolution, we handle AST nodes that don't necessarily get
-// their own ResolvedExpression (specificlaly, uses/imports), so return an ID
+// their own ResolvedExpression (specifically, uses/imports), so return an ID
 // instead of a ResolvedExpression.
 static const ID scopeResolveToIdForNode(Context* context, const AstNode* node) {
   const AstNode* search = node;
@@ -163,6 +174,8 @@ static const ID scopeResolveToIdForNode(Context* context, const AstNode* node) {
     } else if (auto rr = scopeResolveViaModule(context, search, node)) {
       return rr->toId();
     } else if(auto id = scopeResolveViaVisibilityStmt(context, search, node)) {
+      return id;
+    } else if (auto id = scopeResolveViaInclude(context, search, node)) {
       return id;
     }
     search = parsing::parentAst(context, search);
@@ -276,4 +289,119 @@ std::vector<int> const& actualOrderForNode(Context* context, const AstNode* node
   }
 
   return QUERY_END(res);
+}
+
+
+static inline ID parseAndGetSymbolIdFromTopLevelModule(Context* context,
+                                                       const char* modName,
+                                                       const char* symName) {
+  using namespace parsing;
+  // make sure the module is parsed before we try to look up the symbol
+  if (!getToplevelModule(context, UniqueString::get(context, modName))) {
+    return ID();
+  }
+  if (auto TestID = getSymbolIdFromTopLevelModule(context, modName, symName)) {
+    return TestID;
+  }
+  return ID();
+}
+
+struct TestFunctionFinder {
+  // Inputs
+  Context* context;
+  const QualifiedType& testType;
+
+  // Outputs
+  std::vector<const Function*> fns;
+
+  TestFunctionFinder(Context* context, const QualifiedType& testType)
+    : context(context), testType(testType), fns() {}
+
+  bool enter(const Function* fn) {
+    // We're looking for a non-method function that throws and accepts
+    // a single argument (which we will soon validate to be of the testType).
+    if (!fn->throws() || fn->isMethod() || fn->numFormals() != 1) return false;
+    // Skip non-user functions.
+    if (parsing::idIsInBundledModule(context, fn->id())) return false;
+
+    using namespace resolution;
+
+    // The function also needs to be concrete.
+    ResolutionContext rcval(context);
+    const UntypedFnSignature* uSig = UntypedFnSignature::get(context, fn);
+    const TypedFnSignature* sig = typedSignatureInitial(&rcval, uSig);
+    if (sig == nullptr || sig->needsInstantiation()) return false;
+
+    if (canPass(context, testType, sig->formalType(0)).passes()) {
+      // One formal of 'testType', which constitutes a test.
+      fns.push_back(fn);
+    }
+
+    return false;
+  }
+  void exit(const Function* fn) {}
+
+  bool enter(const AstNode* node) { return true; }
+  void exit(const AstNode* node) {}
+};
+
+std::vector<const Function*> const&
+findTestFunctionsForModule(Context* context, const Module* mod) {
+  QUERY_BEGIN(findTestFunctionsForModule, context, mod);
+  std::vector<const Function*> result;
+
+  if (auto TestID =
+    parseAndGetSymbolIdFromTopLevelModule(context, "UnitTest", "Test")) {
+    auto TestTy = resolution::initialTypeForTypeDecl(context, TestID);
+    if (TestTy && TestTy->isClassType()) {
+      auto borrowedDec = ClassTypeDecorator(ClassTypeDecorator::BORROWED_NONNIL);
+      auto borrowedTestTy = TestTy->toClassType()->withDecorator(context, borrowedDec);
+      auto borrowedTestQualTy = QualifiedType(QualifiedType::DEFAULT_INTENT, borrowedTestTy);
+
+      TestFunctionFinder tff(context, borrowedTestQualTy);
+      mod->traverse(tff);
+      result = tff.fns;
+    }
+  }
+  return QUERY_END(result);
+}
+
+struct TestFunctionMainFinder {
+  // Inputs
+  Context* context;
+  ID mainID;
+
+  // Outputs
+  const FnCall* callsMain;
+
+  TestFunctionMainFinder(Context* context, ID mainID)
+    : context(context), mainID(mainID), callsMain(nullptr) {}
+
+  bool enter(const FnCall* call) {
+    if (callsMain != nullptr) return false;
+    auto resolvedID = scopeResolveToIdForNode(context, call->calledExpression());
+    if (resolvedID == mainID) {
+      callsMain = call;
+      return false;
+    }
+    return true;
+  }
+  void exit(const Function* fn) {}
+
+  bool enter(const AstNode* node) { return callsMain == nullptr; }
+  void exit(const AstNode* node) {}
+};
+
+const FnCall* const&
+findUnitTestMainForModule(Context* context, const Module* mod) {
+  QUERY_BEGIN(findUnitTestMainForModule, context, mod);
+  const FnCall* result = nullptr;
+
+  if (auto mainID =
+      parseAndGetSymbolIdFromTopLevelModule(context, "UnitTest", "main")) {
+    TestFunctionMainFinder tfmf(context, mainID);
+    mod->traverse(tfmf);
+    result = tfmf.callsMain;
+  }
+  return QUERY_END(result);
 }

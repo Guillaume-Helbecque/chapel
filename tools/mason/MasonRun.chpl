@@ -28,7 +28,7 @@ use MasonUtils;
 use TOML;
 
 
-proc masonRun(args: [] string, checkProj=true) throws {
+proc masonRun(args: [] string) throws {
 
   var parser = new argumentParser(helpHandler=new MasonRunHelpHandler());
 
@@ -47,11 +47,10 @@ proc masonRun(args: [] string, checkProj=true) throws {
 
   parser.parseArgs(args);
 
-  if checkProj {
-    const projectType = getProjectType();
-    if projectType != "application" then
-      throw new owned MasonError("Only mason applications can be run, but this is a Mason " + projectType);
-  }
+  const projectType = getProjectType();
+  if !exampleOpts._present && projectType != "application" then
+    throw new MasonError(
+      "Only mason applications can be run, but this is a Mason " + projectType);
 
   var show = showFlag.valueAsBool();
   var release = releaseFlag.valueAsBool();
@@ -65,7 +64,7 @@ proc masonRun(args: [] string, checkProj=true) throws {
     exit(0);
   } else if exampleOpts._present || buildFlag.valueAsBool() {
     // --example with value or build flag
-    masonBuildRun(args, checkProj);
+    masonBuildRun(args);
     exit(0);
   }
   runProjectBinary(show, release, execopts);
@@ -135,7 +134,7 @@ proc runProjectBinary(show: bool, release: bool, execopts: list(string)) throws 
 
 
 /* Builds program before running. */
-private proc masonBuildRun(args: [?d] string, checkProj=true) {
+private proc masonBuildRun(args: [?d] string) {
 
   var parser = new argumentParser(helpHandler=new MasonRunHelpHandler());
 
@@ -184,7 +183,7 @@ private proc masonBuildRun(args: [?d] string, checkProj=true) {
       if release then execopts.pushBack("--release");
       if force then execopts.pushBack("--force");
       if show then execopts.pushBack("--show");
-      masonExample(execopts.toArray(), checkProj);
+      masonExample(execopts.toArray());
     }
     else {
       var buildArgs: list(string);
@@ -194,7 +193,7 @@ private proc masonBuildRun(args: [?d] string, checkProj=true) {
       if release then buildArgs.pushBack("--release");
       if force then buildArgs.pushBack("--force");
       if show then buildArgs.pushBack("--show");
-      masonBuild(buildArgs.toArray(), checkProj);
+      masonBuild(buildArgs.toArray());
       for val in passArgs.values() do execopts.pushBack(val);
       runProjectBinary(show, release, execopts);
     }

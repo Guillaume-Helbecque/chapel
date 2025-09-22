@@ -618,6 +618,15 @@ all:
   02/03/25:
     - text: Started using ROCm 6.x
       config: 1-node-mi250x
+  02/27/25:
+    - text: Avoid Overriding Clang Sysroot (#26761)
+      config: chapcs
+  03/20/25:
+    - text: Update bundled qthreads to 1.22 (#26823)
+      config: chapcs, 16-node-apollo-hdr, 16-node-hpe-cray-ex, 1-node-hpe-cray-ex
+  05/21/25:
+    - text: Update system LLVM to 20
+      config: chapcs, 16-node-apollo-hdr, 16-node-hpe-cray-ex, 1-node-hpe-cray-ex, 1-node-a100, 1-node-mi250x
 
 # End all
 
@@ -736,6 +745,11 @@ binary-trees: &binary-trees-base
 binarytrees-submitted:
   <<: *binary-trees-base
 
+bitops:
+  05/30/25:
+    - text: Fix mismatched types in test (#27308)
+      config: chapcs
+
 blackscholes:
   10/21/16:
     - Improvements to scalarReplace, refPropagation and copyPropagation (#4761)
@@ -795,6 +809,10 @@ cg:
 cg-a:
   04/05/18:
     - Convert BaseDist-inheriting classes to use initializers (#9075)
+  07/24/25:
+    - Avoid inlining functions that just do checks (#27531)
+  08/06/25:
+    - Add a pass to deadCodeElimination to remove empty functions that do nothing (#27562)
 
 c-ray:
   10/11/16:
@@ -1090,6 +1108,10 @@ isx-no-return:
 isx-release:
   01/23/18:
     - Fix memory leak introduced in PR #8073 (#8268)
+  07/24/25:
+    - Avoid inlining functions that just do checks (#27531)
+  08/06/25:
+    - Add a pass to deadCodeElimination to remove empty functions that do nothing (#27562)
 
 isx.ml-time: &isx-ml-base
   02/26/16:
@@ -1753,6 +1775,10 @@ pidigits-submitted:
 primes:
   07/01/20:
     - Optimize repeated insertions/deletions from chpl__hashtable (#15982)
+  07/28/25:
+    - Regression due to increased inlining of do_chpl_format (#27511)
+  07/31/25:
+    - Fix regression due to inlining (#27585)
 
 prk-stencil:
   02/14/16:
@@ -1828,6 +1854,10 @@ ra:
     - Convert BaseDist-inheriting classes to use initializers (#9075)
   07/15/20:
     - Enable parallel array init for all types (#16070)
+  07/24/25:
+    - Avoid inlining functions that just do checks (#27531)
+  08/06/25:
+    - Add a pass to deadCodeElimination to remove empty functions that do nothing (#27562)
 
 ra.ml-perf:
   09/19/17:
@@ -2569,6 +2599,14 @@ arkouda: &arkouda-base
   01/02/25:
     - text: No longer running tests with --isolated
       config:  16-node-xc
+  03/06/25:
+    - text: Suspected systems changes
+      config: 16-node-xc
+  03/20/25:
+    - text: Add ARKOUDA_DEFAULT_TEMP_DIRECTORY for arkouda perf tests (#26949)
+      config: 16-node-hpe-apollo-hdr
+  07/02/25:
+    - Use Chapel 2.5 for Arkouda "release" nightly testing
 
 arkouda-string:
   <<: *arkouda-base

@@ -8,7 +8,7 @@ import re
 import chpl_tasks
 import chpl_home_utils
 import overrides
-from utils import error, warning, memoize, try_run_command, which, is_ver_in_range
+from utils import error, warning, memoize, try_run_command, which, is_ver_in_range, check_valid_var
 
 def _validate_cuda_version():
     return _validate_cuda_version_impl()
@@ -209,11 +209,17 @@ def _reportMissingGpuReq(msg, allowExempt=True, suggestNone=True):
 def determine_gpu_type():
     typesFound = [val for (val, gpu_type) in GPU_TYPES.items() if which(gpu_type.compiler)]
     if len(typesFound) == 1:
-      return typesFound[0]
+        return typesFound[0]
 
-    error("Unable to determine GPU type%s, assign 'CHPL_GPU' to one of: [%s]" %
-      ("" if len(typesFound) == 0 else " (detected: [%s])" %  ", ".join(typesFound),
-       ", ".join(GPU_TYPES.keys())))
+    detected_str = (
+        " (detected: [{}])".format(", ".join(typesFound)) if typesFound else ""
+    )
+    options_str = ", ".join(t for t in GPU_TYPES.keys() if t != "none")
+    error(
+        "Unable to determine GPU type{}, assign 'CHPL_GPU' to one of: [{}]".format(
+            detected_str, options_str
+        )
+    )
     return None
 
 @memoize
@@ -234,7 +240,7 @@ def get():
     chpl_gpu_env = overrides.get("CHPL_GPU")
     if chpl_gpu_env:
         if chpl_gpu_env not in GPU_TYPES:
-            error("Only {} supported for 'CHPL_GPU'".format(list(GPU_TYPES.keys())))
+            check_valid_var("CHPL_GPU", chpl_gpu_env, list(GPU_TYPES.keys()))
         else:
             return chpl_gpu_env
     else:
@@ -539,9 +545,12 @@ def _validate_rocm_version_impl():
     """Check that the installed ROCM version is >= MIN_REQ_VERSION and <
        MAX_REQ_VERSION"""
     MIN_REQ_VERSION = "5.0"
-    MAX_REQ_VERSION = "5.5"
-    MIN_ROCM6_REQ_VERSION = "6"
-    MAX_ROCM6_REQ_VERSION = "6.3"
+    MAX_REQ_VERSION = "5.5" # upper bound non-inclusive
+    MAX_REQ_VERSION_NICE = "5.4.x"
+
+    MIN_ROCM6_REQ_VERSION = "6.0"
+    MAX_ROCM6_REQ_VERSION = "6.3" # upper bound non-inclusive
+    MAX_ROCM6_REQ_VERSION_NICE = "6.2.x"
 
     rocm_version = get_sdk_version()
 
@@ -551,9 +560,9 @@ def _validate_rocm_version_impl():
 
     if not is_ver_in_range(rocm_version, MIN_REQ_VERSION, MAX_REQ_VERSION) and not is_ver_in_range(rocm_version, MIN_ROCM6_REQ_VERSION, MAX_ROCM6_REQ_VERSION):
         _reportMissingGpuReq(
-            "Chapel requires ROCm to be a version between %s and %s or between %s and %s, "
+            "Chapel requires ROCm versions %s to %s or %s to %s, "
             "detected version %s on system." %
-            (MIN_REQ_VERSION, MAX_REQ_VERSION, MIN_ROCM6_REQ_VERSION, MAX_ROCM6_REQ_VERSION, rocm_version))
+            (MIN_REQ_VERSION, MAX_REQ_VERSION_NICE, MIN_ROCM6_REQ_VERSION, MAX_ROCM6_REQ_VERSION_NICE, rocm_version))
         return False
 
     return True

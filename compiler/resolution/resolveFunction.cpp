@@ -536,7 +536,7 @@ void resolveFunction(FnSymbol* fn, CallExpr* forCall) {
     if (fn->id == breakOnResolveID) {
       printf("breaking on resolve fn %s[%d] (%d args)\n",
              fn->name, fn->id, fn->numFormals());
-      gdbShouldBreakHere();
+      debuggerBreakHere();
     }
 
     fn->addFlag(FLAG_RESOLVED);
@@ -1117,7 +1117,9 @@ static void insertUnrefForArrayOrTupleReturn(FnSymbol* fn) {
 
           call->insertAtTail(unrefCall);
 
-          if (array && isAliasingArrayType(rhs->getValType()) == false) {
+          SymExpr* rhsse = toSymExpr(rhs);
+          if (array && isAliasingArrayType(rhs->getValType()) == false &&
+              (rhsse == NULL || !rhsse->symbol()->hasFlag(FLAG_IS_ARRAY_VIEW))) {
             // If the function does not have this flag, this must
             // be a non-view array. Remove the unref call.
             unrefCall->replace(rhs->copy());
@@ -2302,7 +2304,7 @@ void insertFormalTemps(FnSymbol* fn) {
 }
 
 // Returns true if the formal needs an internal temporary, false otherwise.
-// See also ArgSymbol::requiresCPtr
+// See also argRequiresCPtr
 bool formalRequiresTemp(ArgSymbol* formal, FnSymbol* fn) {
   return
     //
@@ -2696,6 +2698,18 @@ Type* arrayElementType(Type* arrayType) {
   return eltType;
 }
 
+// some simple cases, not exhaustive
+static const char* chooseSeparatorForType(const char* type) {
+  if (startsWith(type, "i") ||
+      startsWith(type, "a") ||
+      startsWith(type, "own") ||
+      startsWith(type, "[") )
+    return "an ";
+  else
+    // todo: perhaps switch this to "a(n) "; need to update many .good files
+    return "a ";
+}
+
 static void issueInitConversionError(Symbol* to, Symbol* toType, Symbol* from,
                                      Expr* where) {
 
@@ -2733,8 +2747,8 @@ static void issueInitConversionError(Symbol* to, Symbol* toType, Symbol* from,
     sep = "";
     fromStr = "nil";
   } else {
-    sep = "a ";
     fromStr = toString(fromValType);
+    sep = chooseSeparatorForType(fromStr);
   }
 
   USR_FATAL_CONT(where,
@@ -3004,7 +3018,7 @@ static void insertCasts(BaseAST* ast, FnSymbol* fn,
             lhsType = lhsType->getValType();
 
           if (call->id == breakOnResolveID)
-            gdbShouldBreakHere();
+            debuggerBreakHere();
 
           Symbol* to = lhs->symbol();
           Symbol* toType = NULL;

@@ -685,7 +685,34 @@ static void printRejectedCandidates(ErrorWriterBase& wr,
       }
       bool actualPrinted = false;
       const uast::VarLikeDecl* offendingActual = actualDecls.at(printCount);
-      if (badPass.formalType().isUnknown()) {
+      if (candidate.formalReason() == resolution::FAIL_VARARG_TQ_MISMATCH) {
+        // a single vararg formal with a type query (like `x: ?t`) was used
+        // to pass actuals of different types. Collect all applicable types.
+
+        resolution::FormalActualMap fa(fn, ci);
+        std::vector<std::pair<const types::Type*, size_t>> actuals;
+        std::set<const types::Type*> seenTypes;
+        for (size_t i = 0; i < ci.numActuals(); i++){
+          auto entry = fa.byActualIdx(i);
+          if (!entry) continue;
+          if (seenTypes.insert(entry->actualType().type()).second) {
+            actuals.emplace_back(entry->actualType().type(), i);
+          }
+        }
+
+        CHPL_ASSERT(actuals.size() > 1);
+        wr.message("The variable-argument ", expectedThing, " ", formalName,
+                   ", which contains a type query, was used with ", passedThing, "s of "
+                    "incompatible types '", actuals[0].first, "' and '",
+                    actuals[1].first, "'.");
+        wr.message("Variable-argument ", expectedThing, "s with type queries can only accept ",
+                    passedThing, "s of a single type.");
+
+
+        // TODO: we don't currently have all actuals available here, so
+        // we can't print nice underlines showing the incompatible actuals.
+
+      } else if (badPass.formalType().isUnknown()) {
         // The formal type can be unknown in an initial instantiation if it
         // depends on the previous formals' types. In that case, don't print it
         // and say something nicer.
@@ -697,10 +724,10 @@ static void printRejectedCandidates(ErrorWriterBase& wr,
                  !offendingActual->typeExpression()) {
         auto formalKind = badPass.formalType().kind();
         auto actualName = "'" + actualExpr->toIdentifier()->name().str() + "'";
-        wr.message("The actual ", actualName,
+        wr.note(offendingActual->id(), "The actual ", actualName,
                    " expects to be split-initialized because it is declared without a type or initialization expression here:");
         wr.codeForDef(offendingActual);
-        wr.message("The call to '", ci.name() ,"' occurs before any valid initialization points:");
+        wr.note(actualExpr, "The call to '", ci.name() ,"' occurs before any valid initialization points:");
         wr.code(actualExpr, { actualExpr });
         actualPrinted = true;
         wr.message("The call to '", ci.name(), "' cannot initialize ",
@@ -987,6 +1014,31 @@ void ErrorInvalidClassCast::write(ErrorWriterBase& wr) const {
   }
 }
 
+void ErrorInvalidContinueBreakTarget::write(ErrorWriterBase& wr) const {
+  auto stmt = std::get<const uast::AstNode*>(info_);
+  auto target = std::get<ID>(info_);
+  auto& qt = std::get<types::QualifiedType>(info_);
+
+  const uast::AstNode* targetNode;
+  const char* stmtType = nullptr;
+  if (auto cont = stmt->toContinue()) {
+    targetNode = cont->target();
+    stmtType = "'continue'";
+  } else if (auto brk = stmt->toBreak()) {
+    targetNode = brk->target();
+    stmtType = "'break'";
+  } else {
+    targetNode = stmt;
+    stmtType = "'continue' or 'break'";
+    CHPL_ASSERT(false && "invalid AST in error report");
+  }
+  wr.heading(kind_, type_, stmt, "invalid target for ", stmtType, " statement.");
+  wr.code(stmt, { targetNode });
+  wr.message("A ", stmtType, " statement can only refer to a loop. This is done by using the loop's label.");
+  wr.message("However, the target is declared as ", qt, " here:");
+  wr.codeForDef(target);
+}
+
 void ErrorInvalidDomainCall::write(ErrorWriterBase& wr) const {
   auto fnCall = std::get<const uast::FnCall*>(info_);
   auto actualTypes = std::get<std::vector<types::QualifiedType>>(info_);
@@ -1198,6 +1250,18 @@ void ErrorIteratorsInOtherScopes::write(ErrorWriterBase& wr) const {
     wr.note(rejectedCandidate->id(), "one candidate was found here:");
     wr.codeForLocation(rejectedCandidate->id());
   }
+}
+
+void ErrorLoopLabelOutsideBreakOrContinue::write(ErrorWriterBase& wr) const {
+  auto label = std::get<const uast::AstNode*>(info_);
+  auto loop = std::get<ID>(info_);
+
+  wr.heading(kind_, type_, label, "invalid reference to loop label outside of a 'break' or 'continue' statement.");
+  wr.message("Loop labels can only be referenced in 'break' or 'continue' statements.");
+  wr.message("However, the expression here references a loop label in another context:");
+  wr.code(label, { label });
+  wr.message("The expression in question refers to a labeled loop declared here:");
+  wr.codeForLocation(loop);
 }
 
 void ErrorMemManagementNonClass::write(ErrorWriterBase& wr) const {
@@ -1888,6 +1952,55 @@ void ErrorRedefinition::write(ErrorWriterBase& wr) const {
   }
 }
 
+void ErrorReductionAssignNonIdentifier::write(ErrorWriterBase& wr) const {
+  auto opCall = std::get<const uast::OpCall*>(info_);
+  wr.heading(kind_, type_, opCall, "invalid reduction assignment to non-identifier:");
+  wr.message("The left-hand side of a 'reduce=' statement must be an identifier referring to a variable with a 'reduce' intent.");
+  wr.message("However, the left-hand side is not an identifier here:");
+  wr.code(opCall, { opCall->actual(0) });
+}
+
+void ErrorReductionAssignNotReduceIntent::write(ErrorWriterBase& wr) const {
+  auto opCall = std::get<const uast::OpCall*>(info_);
+  auto lhs = std::get<const uast::AstNode*>(info_);
+  wr.heading(kind_, type_, opCall, "invalid reduction assignment to variable declared outside of 'reduce' intent:");
+  wr.codeForLocation(opCall);
+  wr.message("The left-hand side of a 'reduce=' statement must be an identifier referring to a variable with a 'reduce' intent.");
+  wr.message("However, the left-hand side is declared (outside a 'reduce' intent) here:");
+  wr.codeForDef(lhs);
+  wr.message("The 'reduce=' operator uses the 'reduce' intent to determine the reduction operation.");
+}
+
+void ErrorReductionAssignInvalidRhs::write(ErrorWriterBase& wr) const {
+  auto opCall = std::get<const uast::OpCall*>(info_);
+  auto reduceIntent = std::get<const uast::ReduceIntent*>(info_);
+  auto shadowed = std::get<const uast::AstNode*>(info_);
+  auto& ci = std::get<resolution::CallInfo>(info_);
+  wr.heading(kind_, type_, opCall, "invalid reduction assignment:");
+  wr.codeForLocation(opCall);
+  wr.message("The right-hand side of the 'reduce=' statement refers to a variable '",
+              reduceIntent->name(), "' declared '", reduceIntent->op(), " reduce' here:");
+  wr.codeForDef(reduceIntent);
+  wr.message("This shadows the declaration of '", reduceIntent->name(), "' with type '", ci.actual(1).type().type(), "' here:");
+  wr.codeForDef(shadowed);
+  wr.message("However, the reduction '", reduceIntent->op(), "' does not support an assignment from ", decayToValue(ci.actual(2).type()), ".");
+  wr.code(opCall, { opCall->actual(1) });
+}
+
+void ErrorReductionIntentChangesType::write(ErrorWriterBase& wr) const {
+  auto reduceIntent = std::get<const uast::ReduceIntent*>(info_);
+  auto shadowed = std::get<const uast::AstNode*>(info_);
+  auto& oldType = std::get<2>(info_);
+  auto& newType = std::get<3>(info_);
+  wr.heading(kind_, type_, reduceIntent, "cannot use non-closed reduction in intent:");
+  wr.codeForLocation(reduceIntent);
+  wr.message("A reduction is closed if it produces values of the same type as the values it operates on.");
+  wr.message("The reduce intent shadows the declaration of '", reduceIntent->name(), "' with type '", oldType.type(), "' here:");
+  wr.codeForDef(shadowed);
+  wr.message("However, the reduction '", reduceIntent->op(), "' produces values of type '", newType.type(), "'.");
+  wr.message("The reduced type of a variable cannot change, as the final reduced value is assigned back into the variable.");
+}
+
 static const uast::AstNode* getReduceOrScanOp(const uast::AstNode* reduceOrScan) {
   if (auto reduce = reduceOrScan->toReduce()) {
     return reduce->op();
@@ -2325,6 +2438,23 @@ void ErrorUseOfLaterVariable::write(ErrorWriterBase& wr) const {
   wr.note(laterId, "the variable '", name, "' is defined here:");
   wr.codeForDef(laterId);
   wr.message("Variables cannot be referenced before they are defined.");
+}
+
+
+void ErrorVariableWithoutInitOrType::write(ErrorWriterBase& wr) const {
+  auto decl = std::get<const uast::AstNode*>(info_);
+  auto& useOf = std::get<ID>(info_);
+  auto name = std::get<UniqueString>(info_);
+  wr.heading(kind_, type_, decl,
+             "variable '", name, "' is declared without an initializer or type.");
+  if (!useOf.isEmpty()) {
+    wr.note(useOf, "cannot find initialization point to split-init this variable");
+  }
+  wr.codeForDef(decl);
+  if (!useOf.isEmpty()) {
+    wr.note(useOf, "the variable '", name, "' is used here");
+    wr.codeForLocation(useOf);
+  }
 }
 
 void ErrorUserDiagnosticEncounterError::write(ErrorWriterBase& wr) const {

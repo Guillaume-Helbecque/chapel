@@ -61,6 +61,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#include "llvm/Support/Path.h"
+#include "llvm/Support/FileSystem.h"
+
 
 std::string executableFilename;
 std::string libmodeHeadername;
@@ -437,6 +440,13 @@ bool isObjFile(const char* filename) {
   return checkSuffix(filename, "o");
 }
 
+bool isStaticLibrary(const char* filename) {
+  return checkSuffix(filename, "a");
+}
+bool isSharedLibrary(const char* filename) {
+  return checkSuffix(filename, "so") || checkSuffix(filename, "dylib");
+}
+
 static bool foundChplSource = false;
 
 bool isChplSource(const char* filename) {
@@ -456,7 +466,9 @@ static bool isRecognizedSource(const char* filename) {
           isCHeader(filename) ||
           isObjFile(filename) ||
           isChplSource(filename) ||
-          isDynoLib(filename));
+          isDynoLib(filename)) ||
+          isStaticLibrary(filename) ||
+          isSharedLibrary(filename);
 }
 
 
@@ -690,7 +702,9 @@ static void genObjFiles(FILE* makefile) {
   int filenum = 0;
   int first = 1;
   while (const char* inputFilename = nthFilename(filenum++)) {
-    bool objfile = isObjFile(inputFilename);
+    bool objfile = isObjFile(inputFilename) ||
+                   isSharedLibrary(inputFilename) ||
+                   isStaticLibrary(inputFilename);
     bool cfile = isCSource(inputFilename);
     if (objfile || cfile) {
       if (first) {
@@ -1092,22 +1106,12 @@ void expandInstallationPaths(std::vector<std::string>& args) {
   }
 }
 
-bool isDirectory(const char* path)
-{
-  struct stat stats;
-  if (stat(path, &stats) == 0 && (stats.st_mode & S_IFMT) == S_IFDIR)
-    return true;
-
-  return false;
+bool isDirectory(std::string_view path) {
+  return llvm::sys::fs::is_directory(path);
 }
 
-bool pathExists(const char* path)
-{
-  struct stat stats;
-  if (stat(path, &stats) == 0)
-    return true;
-
-  return false;
+bool pathExists(std::string_view path) {
+  return llvm::sys::fs::exists(path);
 }
 
 // would just use realpath, but it is not supported on all platforms.

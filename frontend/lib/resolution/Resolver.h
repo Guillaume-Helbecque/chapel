@@ -25,6 +25,7 @@
 #include "chpl/types/CompositeType.h"
 #include "chpl/uast/all-uast.h"
 #include "InitResolver.h"
+#include "chpl/resolution/BranchSensitiveVisitor.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -34,11 +35,17 @@
 namespace chpl {
 namespace resolution {
 
-struct Resolver {
+struct Resolver : BranchSensitiveVisitor<DefaultFrame> {
   // types used below
-  using ActionAndId = std::tuple<AssociatedAction::Action, ID>;
+  struct ActionInfo {
+    public:
+      AssociatedAction::Action action;
+      ID id;
+      types::QualifiedType type;
+  };
   using SubstitutionsMap = types::CompositeType::SubstitutionsMap;
   using ReceiverScopesVec = SimpleMethodLookupHelper::ReceiverScopesVec;
+  using IgnoredExtraData = std::variant<std::monostate>;
 
   /**
     When looking up matches for a particular identifier, we might encounter
@@ -83,6 +90,7 @@ struct Resolver {
   const uast::AstNode* curStmt = nullptr;
   const uast::AstNode* curInheritanceExpr = nullptr;
   const types::CompositeType* inCompositeType = nullptr;
+  const types::BasicClassType* superInitClassType = nullptr;
   const SubstitutionsMap* substitutions = nullptr;
   DefaultsPolicy defaultsPolicy = DefaultsPolicy::IGNORE_DEFAULTS;
   const TypedFnSignature* typedSignature = nullptr;
@@ -97,7 +105,7 @@ struct Resolver {
   ResolutionContext* rc = &emptyResolutionContext;
   bool didPushFrame = false;
   std::vector<const uast::Decl*> declStack;
-  std::vector<const Scope*> scopeStack;
+  std::vector<const uast::Loop*> loopStack;
   std::vector<int> tagTracker;
   bool signatureOnly = false;
   bool fieldOrFormalsComputed = false;
@@ -154,6 +162,16 @@ struct Resolver {
     return PoiInfo(poiScope);
   }
 
+  const types::Param* determineWhenCaseValue(const uast::AstNode* ast, IgnoredExtraData extraData) override;
+  const types::Param* determineIfValue(const uast::AstNode* ast, IgnoredExtraData extraData) override;
+  void traverseNode(const uast::AstNode* ast, IgnoredExtraData rv) override;
+
+  const Scope* currentScope() const {
+    CHPL_ASSERT(!scopeStack.empty());
+    return scopeStack.back()->scope;
+  }
+
+
  private:
   Resolver(Context* context,
            const uast::AstNode* symbol,
@@ -207,7 +225,7 @@ struct Resolver {
 
   // set up Resolver to resolve an instantiation of a Function signature
   static Resolver
-  createForInstantiatedSignature(Context* context,
+  createForInstantiatedSignature(ResolutionContext* rc,
                                  const uast::Function* fn,
                                  const SubstitutionsMap& substitutions,
                                  const PoiScope* poiScope,
@@ -515,17 +533,17 @@ struct Resolver {
     //
     // Instead, returns 'true' if an error needs to be issued.
     bool noteResultWithoutError(ResolvedExpression* r,
-                                optional<ActionAndId> associatedActionAndId = {});
+                                optional<ActionInfo> associatedActionInfo = {});
 
     static bool noteResultWithoutError(Resolver& resolver,
                                        ResolvedExpression* r,
                                        const uast::AstNode* astForContext,
                                        const CallResolutionResult& c,
-                                       optional<ActionAndId> associatedActionAndId = {});
+                                       optional<ActionInfo> associatedActionInfo = {});
 
     // Same as noteResultWithoutError, but also issues errors.
     void noteResult(ResolvedExpression* r,
-                    optional<ActionAndId> associatedActionAndId = {});
+                    optional<ActionInfo> associatedActionInfo = {});
 
     // Issues a more specific error (listing rejected candidates) if possible.
     // To collect the candidates, re-runs the call. Returns true if an error
@@ -535,7 +553,7 @@ struct Resolver {
     // Like noteResult, except attempts to do more work to print fancier errors
     // (see rerunCallAndPrintCandidates).
     void noteResultPrintCandidates(ResolvedExpression* r,
-                                   optional<ActionAndId> associatedActionAndId = {});
+                                     optional<ActionInfo> associatedActionInfo = {});
   };
 
   /* The resolver's wrapper of resolution::resolveGeneratedCall.
@@ -584,26 +602,18 @@ struct Resolver {
   // handles setting types of variables for split init with 'out' formals
   void adjustTypesForOutFormals(const CallInfo& ci,
                                 const std::vector<const uast::AstNode*>& asts,
-                                const MostSpecificCandidates& fns);
-
-  // e.g. (a, b) = mytuple
-  // checks that tuple size matches and that the elements are assignable
-  // saves any '=' called into r.associatedFns
-  void resolveTupleUnpackAssign(ResolvedExpression& r,
-                                const uast::AstNode* astForErr,
-                                const uast::Tuple* lhsTuple,
-                                types::QualifiedType lhsType,
-                                types::QualifiedType rhsType);
+                                const CallResolutionResult& crr);
 
   // helper for resolveTupleDecl
   // e.g. var (a, b) = mytuple
   // checks that tuple size matches and establishes types for a and b
   void resolveTupleUnpackDecl(const uast::TupleDecl* lhsTuple,
-                              types::QualifiedType rhsType);
+                              const types::QualifiedType& rhsType);
 
   // e.g. var (a, b) = mytuple
+  void resolveTupleDecl(const uast::TupleDecl* td);
   void resolveTupleDecl(const uast::TupleDecl* td,
-                        const types::Type* useType);
+                        types::QualifiedType useType);
 
   void validateAndSetToId(ResolvedExpression& r,
                           const uast::AstNode* exr,
@@ -630,27 +640,6 @@ struct Resolver {
 
   // Resolve a || or && operation.
   types::QualifiedType typeForBooleanOp(const uast::OpCall* op);
-
-  // find the element, if any, that a name refers to.
-  // Sets outAmbiguous to true if multiple elements of the same name are found,
-  // and to false otherwise.
-  ID scopeResolveEnumElement(const uast::Enum* enumAst,
-                             UniqueString elementName,
-                             const uast::AstNode* nodeForErr,
-                             bool& outAmbiguous);
-  // Given the results of looking up an enum element, construct a QualifiedType.
-  types::QualifiedType
-  typeForScopeResolvedEnumElement(const types::EnumType* enumType,
-                                  const ID& refersToId,
-                                  bool ambiguous);
-  types::QualifiedType
-  typeForScopeResolvedEnumElement(const ID& enumTypeId,
-                                  const ID& refersToId,
-                                  bool ambiguous);
-  // Given a particular enum type, determine the type of a particular element.
-  types::QualifiedType typeForEnumElement(const types::EnumType* type,
-                                          UniqueString elemName,
-                                          const uast::AstNode* astForErr);
 
   // helper to resolve a special call
   // returns 'true' if the call was a special call handled here, false
@@ -741,6 +730,9 @@ struct Resolver {
   bool enter(const uast::Range* decl);
   void exit(const uast::Range* decl);
 
+  bool enter(const uast::Array* decl);
+  void exit(const uast::Array* decl);
+
   bool enter(const uast::Domain* decl);
   void exit(const uast::Domain* decl);
 
@@ -772,6 +764,12 @@ struct Resolver {
   bool enter(const uast::Return* ret);
   void exit(const uast::Return* ret);
 
+  bool enter(const uast::Break* brk);
+  void exit(const uast::Break* brk);
+
+  bool enter(const uast::Continue* cont);
+  void exit(const uast::Continue* cont);
+
   bool enter(const uast::Throw* ret);
   void exit(const uast::Throw* ret);
 
@@ -802,6 +800,18 @@ struct Resolver {
 };
 
 } // end namespace resolution
+
+namespace uast {
+template <>
+struct AstVisitorPrecondition<resolution::Resolver> {
+  static bool skipSubtree(const AstNode* node, resolution::Resolver& rv) {
+    if (rv.scopeResolveOnly) return false;
+    return rv.isDoneExecuting();
+  }
+};
+
+};
+
 } // end namespace chpl
 
 #endif

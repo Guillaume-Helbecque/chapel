@@ -21,7 +21,6 @@ Algorithms
    Crypto <packages/Crypto>
    NPBRandom <packages/NPBRandom>
    Search <packages/Search>
-   Sort <packages/Sort>
 
 Communication (Inter-Locale)
 ----------------------------
@@ -41,7 +40,6 @@ Data Structures
 
    ConcurrentMap <packages/ConcurrentMap>
    DistributedBag <packages/DistributedBag>
-   DistributedBagDeprecated <packages/DistributedBagDeprecated>
    DistributedDeque <packages/DistributedDeque>
    DistributedIters <packages/DistributedIters>
    LinkedLists <packages/LinkedLists>
@@ -74,6 +72,7 @@ Interoperability
 .. toctree::
    :maxdepth: 1
 
+   Dynamic Loading <packages/DynamicLoading>
    Python <packages/Python>
 
 Math / Numerical Computing

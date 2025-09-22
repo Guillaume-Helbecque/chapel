@@ -74,12 +74,12 @@ llvm::AllocaInst* makeAlloca(llvm::Type* type,
       tempVar = new llvm::AllocaInst(type,
                                      DL.getAllocaAddrSpace(),
                                      size, llvm::Align(align),
-                                     name, insertBefore);
+                                     name, getInsertPosition(insertBefore));
       trackLLVMValue(tempVar);
     } else {
       tempVar = new llvm::AllocaInst(type,
                                      DL.getAllocaAddrSpace(),
-                                     size, name, insertBefore);
+                                     size, name, getInsertPosition(insertBefore));
       trackLLVMValue(tempVar);
     }
   } else {
@@ -332,7 +332,6 @@ int64_t arrayVecN(llvm::Type *t)
     unsigned n = at->getNumElements();
     return n;
   } else if( t->isVectorTy() ) {
-#if HAVE_LLVM_VER >= 120
     unsigned n;
     if (llvm::FixedVectorType *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
       n = vt->getNumElements();
@@ -340,10 +339,6 @@ int64_t arrayVecN(llvm::Type *t)
       // Scalable vector type not handled here
       return -1;
     }
-#else
-    llvm::VectorType *vt = llvm::dyn_cast<llvm::VectorType>(t);
-    unsigned n = vt->getNumElements();
-#endif
     return n;
   } else {
     return -1;
@@ -513,8 +508,8 @@ llvm::Value *convertValueToType(llvm::IRBuilder<>* irBuilder,
       // todo: setValueAlignment(tmp_alloc, ???, ???);
       *alloca = tmp_alloc;
       // Now cast the allocation to both fromType and toType.
-      llvm::Type* curPtrType = curType->getPointerTo();
-      llvm::Type* newPtrType = newType->getPointerTo();
+      llvm::Type* curPtrType = llvm::PointerType::getUnqual(curType);
+      llvm::Type* newPtrType = llvm::PointerType::getUnqual(newType);
       // Now get cast pointers
       llvm::Value* tmp_cur = irBuilder->CreatePointerCast(tmp_alloc, curPtrType);
       trackLLVMValue(tmp_cur);
@@ -524,11 +519,9 @@ llvm::Value *convertValueToType(llvm::IRBuilder<>* irBuilder,
       trackLLVMValue(store_cur);
 #if HAVE_LLVM_VER >= 150
       return trackLLVMValue(irBuilder->CreateLoad(newType, tmp_new));
-#elif HAVE_LLVM_VER >= 130
+#else
       return trackLLVMValue(irBuilder->CreateLoad(
                         tmp_new->getType()->getPointerElementType(), tmp_new));
-#else
-      return trackLLVMValue(irBuilder->CreateLoad(tmp_new));
 #endif
     }
   }
@@ -586,6 +579,16 @@ void print_llvm(llvm::Module* m)
   fprintf(stderr, "\n");
 }
 
+void print_llvm(llvm::Metadata* m)
+{
+  if (m == NULL)
+    fprintf(stderr, "NULL");
+  else
+    m->print(llvm::dbgs(), nullptr, true);
+
+  fprintf(stderr, "\n");
+}
+
 static void printfLLVMHelper(const char* fmt) {
   auto fd = getLlvmPrintIrFile();
   *fd << fmt;
@@ -639,6 +642,15 @@ void list_view(const llvm::Module* arg) {
   printfLLVMHelper("\n");
 }
 
+void list_view(const llvm::Metadata* arg) {
+  if (arg == NULL) printfLLVMHelper("<NULL>");
+  else {
+    auto fd = getLlvmPrintIrFile();
+    arg->print(*fd, nullptr, true);
+  }
+  printfLLVMHelper("\n");
+}
+
 ////////////////////
 // trackLLVMValue //
 ////////////////////
@@ -676,7 +688,7 @@ static int addLlvmValue(const llvm::Value* val) {
 
 const llvm::Value* trackLLVMValue(const llvm::Value* val) {
   int newId = addLlvmValue(val);
-  if (newId == breakOnLLVMID) gdbShouldBreakHere();
+  if (newId == breakOnLLVMID) debuggerBreakHere();
   return val;
 }
 
@@ -763,43 +775,40 @@ void nprint_view(const llvm::Module* arg) {
   printfLLVMHelper("\n");
 }
 
+
+void nprint_view(const llvm::Metadata* arg) {
+  if (arg == NULL) printfLLVMHelper("<NULL>");
+  else {
+    auto fd = getLlvmPrintIrFile();
+    arg->print(*fd, &llvmValueTracker, nullptr, true);
+  }
+  printfLLVMHelper("\n");
+}
+
 #else // if TRACK_LLVM_VALUES
 
 // LLVM IDs are not tracked; nprint_view() is the same as list_view()
 
-void nprint_view(const llvm::Type* arg)   { list_view(arg); }
-void nprint_view(const llvm::Value* arg)  { list_view(arg); }
-void nprint_view(const llvm::Module* arg) { list_view(arg); }
+void nprint_view(const llvm::Type* arg)     { list_view(arg); }
+void nprint_view(const llvm::Value* arg)    { list_view(arg); }
+void nprint_view(const llvm::Module* arg)   { list_view(arg); }
+void nprint_view(const llvm::Metadata* arg) { list_view(arg); }
 
 #endif // if TRACK_LLVM_VALUES
 
 llvm::AttrBuilder llvmPrepareAttrBuilder(llvm::LLVMContext& ctx) {
-  #if HAVE_LLVM_VER >= 140
   llvm::AttrBuilder ret(ctx);
-  #else
-  llvm::AttrBuilder ret;
-  std::ignore = ctx;
-  #endif
   return ret;
 }
 
 void llvmAddAttr(llvm::LLVMContext& ctx, llvm::AttributeList& attrs,
             size_t idx,
             llvm::AttrBuilder& b) {
-  #if HAVE_LLVM_VER >= 140
   attrs = attrs.addAttributesAtIndex(ctx, idx, b);
-  #else
-  attrs = attrs.addAttributes(ctx, idx, b);
-  #endif
 }
 
 void llvmAttachStructRetAttr(llvm::AttrBuilder& b, llvm::Type* returnTy) {
-  #if HAVE_LLVM_VER >= 130
   b.addStructRetAttr(returnTy);
-  #else
-  b.addAttribute(llvm::Attribute::StructRet);
-  std::ignore = returnTy;
-  #endif
 
   #if HAVE_LLVM_VER >= 180
   // matches attributes added by clang with sret
@@ -811,10 +820,8 @@ void llvmAttachStructRetAttr(llvm::AttrBuilder& b, llvm::Type* returnTy) {
 bool isOpaquePointer(llvm::Type* ty) {
 #if HAVE_LLVM_VER >= 170
   return ty->isPointerTy();
-#elif HAVE_LLVM_VER >= 140
-  return ty->isOpaquePointerTy();
 #else
-  return false; // older LLVMs did not have opaque pointers
+  return ty->isOpaquePointerTy();
 #endif
 }
 

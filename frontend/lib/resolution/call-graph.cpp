@@ -34,6 +34,10 @@ namespace resolution {
 using namespace uast;
 using namespace types;
 
+bool operator==(const CalledFnOrder& x, const CalledFnOrder& y) {
+  return x.depth == y.depth && x.index == y.index;
+}
+
 struct CalledFnCollector {
   using RV = ResolvedVisitor<CalledFnCollector>;
 
@@ -79,7 +83,17 @@ struct CalledFnCollector {
   }
 
   bool enter(const Function* fn, RV& rv) {
-    return fn == symbol; // only proceed if it's the function requested
+    // only proceed if it's the function requested
+    if (fn == symbol) {
+      return true;
+    }
+
+    // If it's an export function, we should queue it up
+    if (fn->linkage() == Function::Linkage::EXPORT) {
+      collect(resolveConcreteFunction(context, fn->id()));
+    }
+
+    return false;
   }
   void exit(const Function* fn, RV& rv) {
   }
@@ -87,10 +101,58 @@ struct CalledFnCollector {
   bool enter(const AstNode* ast, RV& rv) {
     if (auto re = rv.byPostorder().byAstOrNull(ast)) {
       collectCalls(re);
+
+      // Look for uses of module-scope variables in internal/standard modules,
+      // which we will need to convert. Currently call graph traversal does not
+      // enter into modules when module-scope variables are used, so we have
+      // to explicitly do that here because internal modules are not visited
+      // elsewhere.
+      //
+      // TODO: this is a temporary workaround while the typed resolver is
+      // still in development. Eventually we will resolve the module
+      // initialization of internal/standard modules and pick up these calls
+      // normally.
+      if (ast->isIdentifier() &&
+          !re->toId().isEmpty() &&
+          parsing::idIsModuleScopeVar(context, re->toId()) &&
+          parsing::idIsInBundledModule(context, re->toId())) {
+        auto var = parsing::idToAst(context, re->toId())->toVariable();
+        CHPL_ASSERT(var && var->isVariable());
+
+        if (var->kind() != Variable::Kind::TYPE &&
+            var->kind() != Variable::Kind::PARAM) {
+          CalledFnOrder newOrder = {order.depth + 1, 0};
+          auto v = CalledFnCollector(context, var, nullptr, newOrder, called);
+          v.process();
+
+          order.index += v.order.index;
+        }
+      }
     }
     return true;
   }
   void exit(const AstNode* ast, RV& rv) {
+  }
+
+  // TODO: How can we make this work through ``resolveFunction``, rather than
+  // relying on the cached map in ``ResolvedFunction``? The problem appears to
+  // be that we never use the 'global cache' when storing queries for
+  // nested functions, so the results only live on in ``ResolvedFunction``.
+  const ResolvedFunction* getResolvedFunction(const TypedFnSignature* sig,
+                           const PoiScope* poiScope) {
+    chpl::resolution::ResolutionContext rcval(context);
+    const ResolvedFunction* fn = nullptr;
+    if (resolvedFunction) {
+      if (auto stored = resolvedFunction->getNestedResult(sig, poiScope)) {
+        fn = stored;
+      }
+    }
+
+    if (fn == nullptr) {
+      fn = resolveFunction(&rcval, sig, poiScope);
+    }
+
+    return fn;
   }
 };
 
@@ -102,6 +164,13 @@ void CalledFnCollector::process() {
     chpl::resolution::ResolutionContext rcval(context);
     const ResolutionResultByPostorderID& byPostorder =
       resolvedFunction->resolutionById();
+    ResolvedVisitor<CalledFnCollector> rv(&rcval, symbol, *this, byPostorder);
+    symbol->traverse(rv);
+  } else if (symbol && symbol->isVariable()) {
+    CHPL_ASSERT(parsing::idIsModuleScopeVar(context, symbol->id()));
+    chpl::resolution::ResolutionContext rcval(context);
+    const ResolutionResultByPostorderID& byPostorder =
+      resolveModuleStmt(context, symbol->id());
     ResolvedVisitor<CalledFnCollector> rv(&rcval, symbol, *this, byPostorder);
     symbol->traverse(rv);
   } else {
@@ -129,8 +198,7 @@ void CalledFnCollector::collectCalls(const ResolvedExpression* re) {
   for (const auto& candidate : re->mostSpecific()) {
     if (const TypedFnSignature* sig = candidate.fn()) {
       if (sig->untyped()->idIsFunction()) {
-        chpl::resolution::ResolutionContext rcval(context);
-        const ResolvedFunction* fn = resolveFunction(&rcval, sig, poiScope);
+        auto fn = getResolvedFunction(sig, poiScope);
         collect(fn);
       }
     }
@@ -142,8 +210,7 @@ void CalledFnCollector::collectCalls(const ResolvedExpression* re) {
     // Ideally, that would work by generating uAST for them.
     if (const TypedFnSignature* sig = action.fn()) {
       if (sig->untyped()->idIsFunction()) {
-        chpl::resolution::ResolutionContext rcval(context);
-        const ResolvedFunction* fn = resolveFunction(&rcval, sig, poiScope);
+        auto fn = getResolvedFunction(sig, poiScope);
         collect(fn);
       }
     }
@@ -169,12 +236,21 @@ int gatherTransitiveFnsCalledByFn(Context* context,
   CalledFnsSet directCalls;
   int directCount = gatherFnsCalledByFn(context, fn, order, directCalls);
 
+  // Sort the direct calls by their index in the call graph, so that we can
+  // more reliably iterate over them later. This helps with debugging in
+  // the production compiler by making it easier to break on an AST ID.
+  auto sorted = std::vector<std::pair<const ResolvedFunction*, CalledFnOrder>>(
+      directCalls.begin(), directCalls.end());
+  std::sort(sorted.begin(), sorted.end(), [](auto& a, auto& b) {
+    return a.second.index < b.second.index;
+  });
+
   // used for recording the order value for transitive calls
   CalledFnOrder newOrder = {order.depth + 1, directCount};
 
   // Now, consider each direct call. Add it to 'called' and
   // also handle it recursively, if we added it.
-  for (auto kv : directCalls) {
+  for (auto kv : sorted) {
     if (kv.first == nullptr) continue;
 
     auto pair = called.insert(kv);

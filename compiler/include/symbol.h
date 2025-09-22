@@ -39,6 +39,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 #ifdef HAVE_LLVM
+
+#include "clangUtil.h"
+
 // Forward declare MDNode.
 namespace llvm
 {
@@ -174,12 +177,22 @@ public:
   const char* getDeprecationMsg() const;
   void maybeGenerateDeprecationWarning(Expr* context);
 
+  QualifiedType
+  static computeQualifiedType(bool isFormal, IntentTag intent, Type* type,
+                              Qualifier qual,
+                              bool isConst);
 
   std::string unstableMsg;
   const char* getUnstableMsg() const;
   void maybeGenerateUnstableWarning(Expr* context);
 
   const char* getSanitizedMsg(std::string msg) const;
+
+  std::string firstEdition;
+  std::string lastEdition;
+
+  std::string getFirstEdition() const;
+  std::string getLastEdition() const;
 
 protected:
                      Symbol(AstTag      astTag,
@@ -334,10 +347,7 @@ public:
 
   bool   isVisible(BaseAST* scope)                 const override;
 
-  bool            requiresCPtr();
   const char*     intentDescrString() const;
-
-  GenRet          codegenType();
 
   std::string     getPythonType(PythonFileType pxd);
   std::string     getPythonDefaultValue();
@@ -449,14 +459,6 @@ enum AlignmentStatus {
   // >1 ==> the ABI alignment
 };
 
-// These map from Chapel function types to LLVM function types. They
-// live here rather than in 'llvmUtil.h' because of a name conflict
-// between 'Type' and 'llvm::Type'.
-#ifdef HAVE_LLVM
-bool llvmMapUnderlyingFunctionType(FunctionType* k, llvm::FunctionType* v);
-llvm::FunctionType* llvmGetUnderlyingFunctionType(FunctionType* t);
-#endif
-
 class TypeSymbol final : public Symbol {
  public:
   // We need to know whether or not the definition
@@ -489,6 +491,7 @@ class TypeSymbol final : public Symbol {
   llvm::MDNode* llvmTbaaStructCopyNode;       // tbaa.struct for memcpy
   llvm::MDNode* llvmConstTbaaStructCopyNode;  // const tbaa.struct
   llvm::MDNode* llvmDIType;
+  llvm::MDNode* llvmDIForwardType;
 #else
   // Keep same layout so toggling HAVE_LLVM
   // will not lead to build errors without make clean
@@ -503,6 +506,7 @@ class TypeSymbol final : public Symbol {
   void* llvmTbaaStructCopyNode;
   void* llvmConstTbaaStructCopyNode;
   void* llvmDIType;
+  void* llvmDIForwardType;
 #endif
 
   TypeSymbol(const char* init_name, Type* init_type);
@@ -524,8 +528,6 @@ class TypeSymbol final : public Symbol {
   void codegenCplxMetadata();
   // TBAA metadata for aggregates
   void codegenAggMetadata();
-
-  const char* doc;
 
   BlockStmt* instantiationPoint;
   astlocT userInstantiationPointLoc;

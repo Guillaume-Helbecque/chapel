@@ -199,6 +199,84 @@ static void test8() {
   assert(it->bitwidth() == 8);
 }
 
+// bool is the only type that doesn't allow ? for its bitwidth, since
+// there is only one bitwidth for bool.
+static void test7b() {
+  printf("test7b\n");
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto t = resolveTypeOfXInit(context,
+                R""""(
+                  proc f(arg: bool(?)) { return arg; }
+                  var a: bool;
+                  var x = f(a);
+                )"""", /* requireTypeKnown */ false);
+
+  assert(t.isErroneousType());
+
+  // one for type constructor, one for no matching call
+  assert(guard.realizeErrors() == 2);
+}
+
+static void test8b() {
+  printf("test8b\n");
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto t = resolveTypeOfXInit(context,
+                R""""(
+                  proc f(arg: bool(?w)) { return arg; }
+                  var a: bool;
+                  var x = f(a);
+                )"""", /* requireTypeKnown */ false);
+
+  assert(t.isErroneousType());
+
+  // one for type constructor, one for no matching call
+  assert(guard.realizeErrors() == 2);
+}
+
+// same as test7b, but uses a type alias for bool.
+static void test7c() {
+  printf("test7c\n");
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto t = resolveTypeOfXInit(context,
+                R""""(
+                  type mybool = bool;
+                  proc f(arg: mybool(?)) { return arg; }
+                  var a: mybool;
+                  var x = f(a);
+                )"""", /* requireTypeKnown */ false);
+
+  assert(t.isErroneousType());
+
+  // one for type constructor, one for no matching call
+  assert(guard.realizeErrors() == 2);
+}
+
+// same as test8b, but uses a type alias for bool.
+static void test8c() {
+  printf("test8c\n");
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto t = resolveTypeOfXInit(context,
+                R""""(
+                  type mybool = bool;
+                  proc f(arg: mybool(?w)) { return arg; }
+                  var a: mybool;
+                  var x = f(a);
+                )"""", /* requireTypeKnown */ false);
+
+  assert(t.isErroneousType());
+
+  // one for type constructor, one for no matching call
+  assert(guard.realizeErrors() == 2);
+}
+
 static void test9() {
   printf("test9\n");
   auto context = buildStdContext();
@@ -631,6 +709,159 @@ static void test20() {
   assert(guard.realizeErrors() == 2);
 }
 
+static void test21() {
+  printf("%s\n", __FUNCTION__);
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto vars = resolveTypesOfVariables(context,
+                R""""(
+                  proc f(arg: [?D] ?t) { return D; }
+                  proc g(arg: [?D] ?t) type { return t; }
+
+                  var A: [1..10] int;
+                  var D = f(A);
+                  type t = g(A);
+                )"""", {"D", "t"});
+
+  assert(!vars.at("D").isUnknownOrErroneous());
+  assert(vars.at("D").type()->isDomainType());
+  assert(vars.at("D").type()->toDomainType()->rankInt() == 1);
+  ensureParamEnumStr(vars.at("D").type()->toDomainType()->strides(), "one");
+
+  assert(!vars.at("t").isUnknownOrErroneous());
+  assert(vars.at("t").type()->isIntType());
+}
+
+static void test22() {
+  printf("%s\n", __FUNCTION__);
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto vars = resolveTypesOfVariables(context,
+                R""""(
+                  proc f(arg: [?D]) { return D; }
+
+                  var A: [1..10] int,
+                      B: [1..10] real;
+                  var D1 = f(A);
+                  var D2 = f(B);
+                )"""", {"D1", "D2"});
+
+  auto check = [&vars](const std::string& name) {
+    assert(!vars.at(name).isUnknownOrErroneous());
+    assert(vars.at(name).type()->isDomainType());
+    assert(vars.at(name).type()->toDomainType()->rankInt() == 1);
+    ensureParamEnumStr(vars.at(name).type()->toDomainType()->strides(), "one");
+  };
+  check("D1");
+  check("D2");
+}
+
+static void test23() {
+  printf("%s\n", __FUNCTION__);
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto vars = resolveTypesOfVariables(context,
+                R""""(
+                  proc f(arg: ?k*?t) param { return k; }
+                  proc g(arg: ?k*?t) type { return t; }
+
+                  param x = f((1,2,3));
+                  param y = f((1,2,3,4));
+                  param z = f((1,2));
+                  type t = g((1,2,3));
+                )"""", {"x", "y", "z", "t"});
+
+  ensureParamInt(vars.at("x"), 3);
+  ensureParamInt(vars.at("y"), 4);
+  ensureParamInt(vars.at("z"), 2);
+  assert(!vars.at("t").isUnknownOrErroneous());
+  assert(vars.at("t").type()->isIntType());
+}
+
+static void test24() {
+  printf("%s\n", __FUNCTION__);
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto vars = resolveTypesOfVariables(context,
+                R""""(
+                  proc f(arg: (?a, ?b, ?c)) type { return a; }
+                  proc g(arg: (?a, ?b, ?c)) type { return b; }
+                  proc h(arg: (?a, ?b, ?c)) type { return c; }
+
+                  type x = f((1, 2.0, true));
+                  type y = g((1, 2.0, true));
+                  type z = h((1, 2.0, true));
+                )"""", {"x", "y", "z"});
+
+  for (auto& [name, qt] : vars)  {
+    assert(!qt.isUnknownOrErroneous());
+  }
+  assert(vars.at("x").type()->isIntType());
+  assert(vars.at("y").type()->isRealType());
+  assert(vars.at("z").type()->isBoolType());
+}
+
+// bool variable declarations with type queries are ungood
+static void test25() {
+  printf("%s\n", __FUNCTION__);
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto vars = resolveTypesOfVariables(context,
+                R""""(
+                  var x: bool(?) = true;
+                  var y: bool(?w) = false;
+                )"""", {"x", "y"});
+  assert(vars.at("x").isUnknown());
+  assert(vars.at("y").isUnknown());
+  assert(guard.realizeErrors() == 2);
+}
+
+// same as test25 but using type aliases for bool
+static void test25b() {
+  printf("%s\n", __FUNCTION__);
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto vars = resolveTypesOfVariables(context,
+                R""""(
+                  type mybool = bool;
+                  var x: mybool(?) = true;
+                  var y: mybool(?w) = false;
+                )"""", {"x", "y"});
+  assert(vars.at("x").isUnknown());
+  assert(vars.at("y").isUnknown());
+  assert(guard.realizeErrors() == 2);
+}
+
+static void test26() {
+  printf("%s\n", __FUNCTION__);
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  auto vars = resolveTypesOfVariables(context,
+                R""""(
+                  record wrapper { var x; }
+                  class Wrapper { var x; }
+
+                  proc unwrapRec(type arg: wrapper(?t)) type { return t; }
+                  proc unwrapClass(type arg: owned Wrapper(?t)) type { return t; }
+
+                  type a = unwrapRec(wrapper(int(8)));
+                  type b = unwrapClass(owned Wrapper(bool));
+                )"""", {"a", "b"});
+
+
+  auto& a = vars.at("a");
+  auto& b = vars.at("b");
+  assert(a.isType() && a.type()->isIntType() && a.type()->toIntType()->bitwidth() == 8);
+  assert(b.isType() && b.type()->isBoolType());
+}
+
 int main() {
   test1();
   test2();
@@ -640,6 +871,10 @@ int main() {
   test6();
   test7();
   test8();
+  test7b();
+  test8b();
+  test7c();
+  test8c();
   test9();
   test10();
   test11();
@@ -654,6 +889,13 @@ int main() {
   test18();
   test19();
   test20();
+  test21();
+  test22();
+  test23();
+  test24();
+  test25();
+  test25b();
+  test26();
 
   return 0;
 }

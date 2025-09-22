@@ -36,6 +36,7 @@
 #include "chpl/util/hash.h"
 #include "chpl/util/memory.h"
 
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -46,9 +47,17 @@ namespace resolution {
 
 using SubstitutionsMap = types::CompositeType::SubstitutionsMap;
 
-SubstitutionsMap substituteInMap(Context* context,
-                                 const SubstitutionsMap& substituteIn,
-                                 const types::PlaceholderMap& subs);
+template <typename K>
+std::unordered_map<K, types::QualifiedType>
+substituteInMap(Context* context,
+                const std::unordered_map<K, types::QualifiedType>& substituteIn,
+                const types::PlaceholderMap& subs) {
+  std::unordered_map<K, types::QualifiedType> into;
+  for (auto [id, qt] : substituteIn) {
+    into.emplace(id, qt.substitute(context, subs));
+  }
+  return into;
+}
 
 /* When adjusting return intent overloads, the context of the overloaded
    call (is it used as a value, a reference, or a const reference?). */
@@ -313,6 +322,11 @@ class UntypedFnSignature {
     return idTag_ == uast::asttags::Function;
   }
 
+  /** Returns true if id() refers to a function declared in an extern block */
+  bool idIsExternBlockFunction() const {
+    return isCompilerGenerated() && id().isExternBlockElement();
+  }
+
   /** Returns true if id() refers to a Class */
   bool idIsClass() const {
     return idTag_ == uast::asttags::Class;
@@ -410,6 +424,11 @@ class UntypedFnSignature {
   /// \endcond DO_NOT_DOCUMENT
 };
 
+const UntypedFnSignature*
+getUntypedFnSignatureForFn(Context* context,
+                           const uast::Function* fn,
+                           ID const* compilerGeneratedOrigin = nullptr);
+
 /**
   This type stores the outer variables used by a function. For each mention
   of an outer variable, it keeps track of the outer variable's ID and type.
@@ -485,6 +504,16 @@ class OuterVariables {
     return &*targetIdToType_.find(it->second);
   }
 
+  /** If available, returns the type associated with an outer variable's ID */
+  const std::optional<QualifiedType> targetType(const ID& target) const {
+    auto it = targetIdToType_.find(target);
+    if (it == targetIdToType_.end()) {
+      return {};
+    } else {
+      return { it->second };
+    }
+  }
+
   bool isEmpty() const {
     return mentionIdToTargetId_.empty();
   }
@@ -550,6 +579,9 @@ class CallInfo {
  public:
   using CallInfoActualIterable = Iterable<std::vector<CallInfoActual>>;
 
+  /** default constructor for the query system */
+  CallInfo() : name_(), calledType_() {}
+
   /** Construct a CallInfo that contains QualifiedTypes for actuals */
   CallInfo(UniqueString name, types::QualifiedType calledType,
            bool isMethodCall,
@@ -565,6 +597,7 @@ class CallInfo {
     if (isMethodCall) {
       CHPL_ASSERT(numActuals() >= 1);
       CHPL_ASSERT(this->actual(0).byName() == "this");
+      CHPL_ASSERT(calledType.isUnknown());
     }
     if (isParenless) {
       if (isMethodCall) {
@@ -590,6 +623,10 @@ class CallInfo {
   static CallInfo createSimple(UniqueString calledFnName,
                                types::QualifiedType arg1type,
                                types::QualifiedType arg2type);
+  /** Construct a CallInfo with arbitrary arguments,
+      for calling a regular function by name. Does not handle methods. */
+  static CallInfo createSimple(UniqueString calledFnName,
+                               std::vector<CallInfoActual> actuals);
 
   /** Construct a CallInfo with unknown types for the actuals
       that can be used for FormalActualMap but not much else.
@@ -648,6 +685,30 @@ class CallInfo {
                              const uast::AstNode*& questionArg,
                              std::vector<const uast::AstNode*>* actualAsts);
 
+  /** Same as prepareActuals, but instead of iterating over all the actuals
+      of a call, simply prepare a single actual.
+
+      Unlike prepareActuals, call can be null (if setting up an actual
+      from a call-like thing, like a domain expression).
+   */
+  static void prepareActual(Context* context,
+                            const uast::Call* call,
+                            const uast::AstNode* actual,
+                            int actualIdx,
+                            const ResolutionResultByPostorderID& byPostorder,
+                            bool raiseErrors,
+                            std::vector<CallInfoActual>& actuals,
+                            const uast::AstNode*& questionArg,
+                            std::vector<const uast::AstNode*>* actualAsts);
+
+  /** return the type of the 'this' actual, aka the receiver of a method call. */
+  types::QualifiedType methodReceiverType() const {
+    CHPL_ASSERT(isMethodCall());
+    CHPL_ASSERT(numActuals() > 0);
+    auto& firstActual = actual(0);
+    CHPL_ASSERT(firstActual.byName() == "this");
+    return firstActual.type();
+  }
 
   /** return the name of the called thing */
   const UniqueString name() const { return name_; }
@@ -704,6 +765,20 @@ class CallInfo {
     return chpl::hash(name_, calledType_, isMethodCall_, isOpCall_,
                       hasQuestionArg_, isParenless_,
                       actuals_);
+  }
+  static bool update(CallInfo& keep,
+                     CallInfo& addin) {
+    return defaultUpdate(keep, addin);
+  }
+
+  void swap(CallInfo& other) {
+    std::swap(name_, other.name_);
+    std::swap(calledType_, other.calledType_);
+    std::swap(isMethodCall_, other.isMethodCall_);
+    std::swap(isOpCall_, other.isOpCall_);
+    std::swap(hasQuestionArg_, other.hasQuestionArg_);
+    std::swap(isParenless_, other.isParenless_);
+    actuals_.swap(other.actuals_);
   }
 
   void stringify(std::ostream& ss, chpl::StringifyKind stringKind) const;
@@ -1199,9 +1274,10 @@ struct CandidatesAndForwardingInfo {
 
   // Compute and fill in forwarding info for a range of newly-added candidates.
   void helpComputeForwardingTo(const CallInfo& fci, size_t start) {
+    CHPL_ASSERT(fci.isMethodCall());
     CHPL_ASSERT(forwardingInfo.size() <= start);
     forwardingInfo.resize(start);
-    types::QualifiedType forwardingReceiverActualType = fci.calledType();
+    types::QualifiedType forwardingReceiverActualType = fci.methodReceiverType();
     for (size_t i = start; i < candidates.size(); i++) {
       forwardingInfo.push_back(forwardingReceiverActualType);
     }
@@ -1326,6 +1402,8 @@ enum PassingFailureReason {
   FAIL_GENERIC_TO_NONTYPE,
   /* A type was expected to be the exact match of the formal, but wasn't. */
   FAIL_NOT_EXACT_MATCH,
+  /* A vararg type query is present in a non-star vararg. */
+  FAIL_VARARG_TQ_MISMATCH,
   /* Some other, generic reason. */
   FAIL_FORMAL_OTHER,
 };
@@ -1631,6 +1709,16 @@ class FormalActualMap {
 
 
 /**
+  A map from a formal index (represented by `int` to match formalIdk field
+  in FormalActual) to a qualified type representing the scalar type.
+  This is not represented using a `SubstitutionsMap` because for some
+  compiler-generated functions, we don't have formal IDs / decls.
+ */
+using PromotedFormalMap = std::unordered_map<int, types::QualifiedType>;
+
+size_t hashPromotedFormalMap(const PromotedFormalMap& map);
+
+/**
   Stores a function candidate. This information includes both the
   TypedFnSignature* representing the candidate, as well as information
   about this candidate's applicability. In particular, we store whether or
@@ -1643,17 +1731,17 @@ class MostSpecificCandidate {
 
   const TypedFnSignature* fn_;
   owned<FormalActualMap> faMap_;
-  owned<SubstitutionsMap> promotedFormals_;
+  owned<PromotedFormalMap> promotedFormals_;
   int constRefCoercionFormal_;
   int constRefCoercionActual_;
 
   MostSpecificCandidate(const TypedFnSignature* fn,
                         FormalActualMap faMap,
-                        SubstitutionsMap promotedFormals,
+                        PromotedFormalMap promotedFormals,
                         int constRefCoercionFormal,
                         int constRefCoercionActual)
     : fn_(fn), faMap_(new FormalActualMap(std::move(faMap))),
-      promotedFormals_(new SubstitutionsMap(std::move(promotedFormals))),
+      promotedFormals_(new PromotedFormalMap(std::move(promotedFormals))),
       constRefCoercionFormal_(constRefCoercionFormal),
       constRefCoercionActual_(constRefCoercionActual) {}
 
@@ -1670,7 +1758,7 @@ class MostSpecificCandidate {
       faMap_ = toOwned(new FormalActualMap(*other.faMap_));
     }
     if (other.promotedFormals_) {
-      promotedFormals_ = toOwned(new SubstitutionsMap(*other.promotedFormals_));
+      promotedFormals_ = toOwned(new PromotedFormalMap(*other.promotedFormals_));
     }
     constRefCoercionFormal_ = other.constRefCoercionFormal_;
     constRefCoercionActual_ = other.constRefCoercionActual_;
@@ -1685,20 +1773,20 @@ class MostSpecificCandidate {
                                         const FormalActualMap& faMap,
                                         const Scope* scope,
                                         const PoiScope* poiScope,
-                                        const SubstitutionsMap& promotedFormals);
+                                        const PromotedFormalMap& promotedFormals);
 
   static MostSpecificCandidate fromTypedFnSignature(ResolutionContext* rc,
                                         const TypedFnSignature* fn,
                                         const CallInfo& info,
                                         const Scope* scope,
                                         const PoiScope* poiScope,
-                                        const SubstitutionsMap& promotedFormals);
+                                        const PromotedFormalMap& promotedFormals);
 
   const TypedFnSignature* fn() const { return fn_; }
 
   const FormalActualMap& formalActualMap() const { return *faMap_; }
 
-  const SubstitutionsMap& promotedFormals() const { return *promotedFormals_; }
+  const PromotedFormalMap& promotedFormals() const { return *promotedFormals_; }
 
   int constRefCoercionFormal() const { return constRefCoercionFormal_; }
 
@@ -1740,7 +1828,7 @@ class MostSpecificCandidate {
     context->markPointer(fn_);
     if (faMap_) faMap_->mark(context);
     if (promotedFormals_) {
-      chpl::mark<SubstitutionsMap>{}(context, *promotedFormals_);
+      chpl::mark<PromotedFormalMap>{}(context, *promotedFormals_);
     }
     (void) constRefCoercionFormal_; // nothing to mark
     (void) constRefCoercionActual_; // nothing to mark
@@ -2330,18 +2418,19 @@ class CallScopeInfo {
 class AssociatedAction {
  public:
   enum Action {
-    ASSIGN,       // same type or different type assign
-    COPY_INIT,    // init= from same type
-    INIT_OTHER,   // init= from other type
+    ASSIGN,           // same type or different type assign
+    COPY_INIT,        // init= from same type
+    INIT_OTHER,       // init= from other type
     CUSTOM_COPY_INIT, // chpl__copyInit for specialized behavior
     DEFAULT_INIT,
     DEINIT,
-    ITERATE,      // aka "these"
+    ITERATE,          // aka "these"
     NEW_INIT,
-    REDUCE_SCAN,  // resolution of "generate" for a reduce/scan operation.
+    REDUCE_SCAN,      // resolution of "generate" for a reduce/scan operation.
+    REDUCE_ASSIGN,    // resolution of "accumulateOntoState" for a reduce= operation.
     INFER_TYPE,
-    COMPARE,      // == , e.g., for select-statements
-    RUNTIME_TYPE, // create runtime type
+    COMPARE,          // == , e.g., for select-statements
+    RUNTIME_TYPE,     // create runtime type
     ENTER_CONTEXT,
     EXIT_CONTEXT,
   };
@@ -2350,15 +2439,18 @@ class AssociatedAction {
   Action action_;
   const TypedFnSignature* fn_;
   ID id_;
+  types::QualifiedType type_;
 
  public:
-  AssociatedAction(Action action, const TypedFnSignature* fn, ID id)
-    : action_(action), fn_(fn), id_(id) {
+  AssociatedAction(Action action, const TypedFnSignature* fn, ID id,
+                   types::QualifiedType type)
+    : action_(action), fn_(fn), id_(id), type_(type) {
   }
   bool operator==(const AssociatedAction& other) const {
     return action_ == other.action_ &&
            fn_ == other.fn_ &&
-           id_ == other.id_;
+           id_ == other.id_ &&
+           type_ == other.type_;
   }
   bool operator!=(const AssociatedAction& other) const {
     return !(*this == other);
@@ -2372,9 +2464,12 @@ class AssociatedAction {
   /** Return the ID is associated with the action */
   const ID& id() const { return id_; }
 
+  const types::QualifiedType type() const { return type_; }
+
   void mark(Context* context) const {
     if (fn_ != nullptr) fn_->mark(context);
     id_.mark(context);
+    type_.mark(context);
   }
 
   void stringify(std::ostream& ss, chpl::StringifyKind stringKind) const;
@@ -2396,6 +2491,8 @@ class ResolvedExpression {
   ID toId_;
   // Is this a reference to a compiler-created primitive?
   bool isBuiltin_ = false;
+  // Did this expression cause the function to stop being resolved?
+  bool causedFatalError_ = false;
 
   // For a function call, what is the most specific candidate,
   // or when using return intent overloading, what are the most specific
@@ -2423,10 +2520,13 @@ class ResolvedExpression {
 
   /** for simple (non-function Identifier) cases, the ID of a NamedDecl it
    * refers to */
-  ID toId() const { return toId_; }
+  const ID& toId() const { return toId_; }
 
   /** check whether this resolution result refers to a compiler builtin like `bool`. */
   bool isBuiltin() const { return isBuiltin_; }
+
+  /** check whether this resolution result caused a fatal error. */
+  bool causedFatalError() const { return causedFatalError_; }
 
   /** For a function call, what is the most specific candidate, or when using
    * return intent overloading, what are the most specific candidates? The
@@ -2445,6 +2545,19 @@ class ResolvedExpression {
     return associatedActions_;
   }
 
+  // TODO: Expected to be a placeholder as we look towards updating the
+  // representation of associated actions.
+  std::optional<AssociatedAction> getAction(AssociatedAction::Action action) const {
+    // TODO: what if there are multiple instances of the same action?
+    auto it = std::find_if(associatedActions_.begin(), associatedActions_.end(),
+                [&](const AssociatedAction a) { return a.action() == action; });
+    if (it != associatedActions_.end()) {
+      return *it;
+    } else {
+      return {};
+    }
+  }
+
   const ResolvedParamLoop* paramLoop() const {
     return paramLoop_;
   }
@@ -2452,11 +2565,19 @@ class ResolvedExpression {
   /** set the isPrimitive flag */
   void setIsBuiltin(bool isBuiltin) { isBuiltin_ = isBuiltin; }
 
+  /** set the causedFatalError flag */
+  void setCausedFatalError(bool causedFatalError) { causedFatalError_ = causedFatalError; }
+
   /** set the toId */
   void setToId(ID toId) { toId_ = toId; }
 
-  /** set the type */
+  /** set the qualified type */
   void setType(const types::QualifiedType& type) { type_ = type; }
+
+  /** set the kind of the qualified type */
+  void setKind(types::QualifiedType::Kind kind) {
+    type_ = { kind, type_.type(), type_.param() };
+  }
 
   /** set the most specific */
   void setMostSpecific(const MostSpecificCandidates& mostSpecific) {
@@ -2469,8 +2590,9 @@ class ResolvedExpression {
   /** add an associated function */
   void addAssociatedAction(AssociatedAction::Action action,
                            const TypedFnSignature* fn,
-                           ID id) {
-    associatedActions_.push_back(AssociatedAction(action, fn, id));
+                           ID id,
+                           types::QualifiedType type) {
+    associatedActions_.push_back(AssociatedAction(action, fn, id, type));
   }
 
   void setParamLoop(const ResolvedParamLoop* paramLoop) { paramLoop_ = paramLoop; }
@@ -2479,6 +2601,7 @@ class ResolvedExpression {
     return type_ == other.type_ &&
            toId_ == other.toId_ &&
            isBuiltin_ == other.isBuiltin_ &&
+           causedFatalError_ == other.causedFatalError_ &&
            mostSpecific_ == other.mostSpecific_ &&
            poiScope_ == other.poiScope_ &&
            associatedActions_ == other.associatedActions_ &&
@@ -2491,6 +2614,7 @@ class ResolvedExpression {
     type_.swap(other.type_);
     toId_.swap(other.toId_);
     std::swap(isBuiltin_, other.isBuiltin_);
+    std::swap(causedFatalError_, other.causedFatalError_);
     mostSpecific_.swap(other.mostSpecific_);
     std::swap(poiScope_, other.poiScope_);
     std::swap(associatedActions_, other.associatedActions_);
@@ -2525,7 +2649,7 @@ class ResolvedExpression {
  */
 class ResolutionResultByPostorderID {
  private:
-  ID symbolId;
+  ID symbolId_;
   // This map is generally accessed with operator[] to default-construct a new
   // ResolvedExpression if none exists for an ID. at() is used instead only
   // when const-ness is required.
@@ -2541,10 +2665,14 @@ class ResolutionResultByPostorderID {
   /** prepare to resolve the body of a For loop */
   void setupForParamLoop(const uast::For* loop, ResolutionResultByPostorderID& parent);
 
+  const ID& symbolId() const {
+    return symbolId_;
+  }
+
   /* ID query functions */
   bool hasId(const ID& id) const {
     auto postorder = id.postOrderId();
-    if (id.symbolPath() == symbolId.symbolPath() &&
+    if (id.symbolPath() == symbolId_.symbolPath() &&
         0 <= postorder && (map.count(postorder) > 0))
       return true;
 
@@ -2582,20 +2710,20 @@ class ResolutionResultByPostorderID {
   }
 
   bool operator==(const ResolutionResultByPostorderID& other) const {
-    return symbolId == other.symbolId &&
+    return symbolId_ == other.symbolId_ &&
            map == other.map;
   }
   bool operator!=(const ResolutionResultByPostorderID& other) const {
     return !(*this == other);
   }
   void swap(ResolutionResultByPostorderID& other) {
-    symbolId.swap(other.symbolId);
+    symbolId_.swap(other.symbolId_);
     map.swap(other.map);
   }
   static bool update(ResolutionResultByPostorderID& keep,
                      ResolutionResultByPostorderID& addin);
   void mark(Context* context) const {
-    symbolId.mark(context);
+    symbolId_.mark(context);
     for (auto const &elt : map) {
       // mark ResolvedExpressions
       elt.second.mark(context);
@@ -2603,6 +2731,14 @@ class ResolutionResultByPostorderID {
   }
 
   void stringify(std::ostream& ss, chpl::StringifyKind stringKind) const;
+
+  auto begin() const {
+    return map.begin();
+  }
+
+  auto end() const {
+    return map.end();
+  }
 
   /// \cond DO_NOT_DOCUMENT
   DECLARE_DUMP;
@@ -2699,6 +2835,9 @@ class ResolvedFunction {
   // the set of point-of-instantiation scopes used by the instantiation
   PoiInfo poiInfo_;
 
+  // the linkage name computed for this function
+  UniqueString linkageName_;
+
   // the return type computed for this function
   types::QualifiedType returnType_;
 
@@ -2718,6 +2857,7 @@ class ResolvedFunction {
                    uast::Function::ReturnIntent returnIntent,
                    ResolutionResultByPostorderID resolutionById,
                    PoiInfo poiInfo,
+                   UniqueString linkageName,
                    types::QualifiedType returnType,
                    std::vector<CompilerDiagnostic> diagnostics,
                    PoiTraceToChildMap poiTraceToChild,
@@ -2726,6 +2866,7 @@ class ResolvedFunction {
         returnIntent_(returnIntent),
         resolutionById_(std::move(resolutionById)),
         poiInfo_(std::move(poiInfo)),
+        linkageName_(linkageName),
         returnType_(std::move(returnType)),
         diagnostics_(std::move(diagnostics)),
         poiTraceToChild_(std::move(poiTraceToChild)),
@@ -2739,6 +2880,9 @@ class ResolvedFunction {
 
   /** the return intent */
   uast::Function::ReturnIntent returnIntent() const { return returnIntent_; }
+
+  /** the linkage name */
+  UniqueString linkageName() const { return linkageName_; }
 
   /** the return type */
   const types::QualifiedType& returnType() const {
@@ -2758,11 +2902,23 @@ class ResolvedFunction {
   /** the set of point-of-instantiations used by the instantiation */
   const PoiInfo& poiInfo() const { return poiInfo_; }
 
+  const ResolvedFunction* getNestedResult(const TypedFnSignature* sig,
+                                          const PoiScope* poiScope) const {
+    auto poiInfo = PoiInfo(poiScope);
+    auto it = sigAndInfoToChildPtr_.find(std::make_pair(sig, poiScope));
+    if (it != sigAndInfoToChildPtr_.end()) {
+      return it->second;
+    } else {
+      return nullptr;
+    }
+  }
+
   bool operator==(const ResolvedFunction& other) const {
     return signature_ == other.signature_ &&
            returnIntent_ == other.returnIntent_ &&
            resolutionById_ == other.resolutionById_ &&
            PoiInfo::updateEquals(poiInfo_, other.poiInfo_) &&
+           linkageName_ == other.linkageName_ &&
            returnType_ == other.returnType_ &&
            diagnostics_ == other.diagnostics_ &&
            poiTraceToChild_ == other.poiTraceToChild_ &&
@@ -2777,6 +2933,7 @@ class ResolvedFunction {
     std::swap(returnIntent_, other.returnIntent_);
     resolutionById_.swap(other.resolutionById_);
     poiInfo_.swap(other.poiInfo_);
+    linkageName_.swap(other.linkageName_);
     returnType_.swap(other.returnType_);
     std::swap(diagnostics_, other.diagnostics_);
     std::swap(poiTraceToChild_, other.poiTraceToChild_);
@@ -2790,6 +2947,7 @@ class ResolvedFunction {
     context->markPointer(signature_);
     resolutionById_.mark(context);
     poiInfo_.mark(context);
+    linkageName_.mark(context);
     returnType_.mark(context);
     chpl::mark<decltype(diagnostics_)>{}(context, diagnostics_);
     for (auto& p : poiTraceToChild_) {
@@ -2804,7 +2962,7 @@ class ResolvedFunction {
   size_t hash() const {
     // Skip 'resolutionById_' since it can be quite large.
     std::ignore = resolutionById_;
-    size_t ret = chpl::hash(signature_, returnIntent_, poiInfo_, returnType_, diagnostics_);
+    size_t ret = chpl::hash(signature_, returnIntent_, poiInfo_, linkageName_, returnType_, diagnostics_);
     for (auto& p : poiTraceToChild_) {
       ret = hash_combine(ret, chpl::hash(p.first));
       ret = hash_combine(ret, chpl::hash(p.second));
@@ -2829,6 +2987,12 @@ class ResolvedFunction {
   const ID& id() const {
     return signature_->id();
   }
+
+  void stringify(std::ostream& ss, chpl::StringifyKind stringKind) const;
+
+  /// \cond DO_NOT_DOCUMENT
+  DECLARE_DUMP;
+  /// \endcond DO_NOT_DOCUMENT
 };
 
 /// \cond DO_NOT_DOCUMENT
@@ -3265,7 +3429,7 @@ struct ReceiverScopeTypedHelper final : public ReceiverScopeHelper {
   }
 
   const TypedMethodLookupHelper*
-  methodLookupForType(Context* context, types::QualifiedType type) const;
+  methodLookupForType(Context* context, types::QualifiedType type, bool checkScalarTypes = false) const;
 
   const TypedMethodLookupHelper*
   methodLookupForMethodId(Context* context, const ID& methodId) const override;
@@ -3352,6 +3516,7 @@ CHPL_DEFINE_STD_HASH_(OuterVariables, (key.hash()));
 CHPL_DEFINE_STD_HASH_(ApplicabilityResult, (key.hash()));
 CHPL_DEFINE_STD_HASH_(CompilerDiagnostic, (key.hash()));
 CHPL_DEFINE_STD_HASH_(ResolvedFunction, (key.hash()));
+CHPL_DEFINE_STD_HASH_(PromotedFormalMap, (chpl::resolution::hashPromotedFormalMap(key)));
 CHPL_DEFINE_STD_HASH_(MostSpecificCandidate, (key.hash()));
 CHPL_DEFINE_STD_HASH_(MostSpecificCandidates, (key.hash()));
 CHPL_DEFINE_STD_HASH_(CallResolutionResult, (key.hash()));

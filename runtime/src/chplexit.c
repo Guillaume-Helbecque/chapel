@@ -26,7 +26,7 @@
 #include "chpl-mem.h"
 #include "chplmemtrack.h"
 #include "chpl-topo.h"
-#include "gdb.h"
+#include "debugger.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +35,7 @@ static void chpl_exit_common(int status, int all) {
   fflush(stdout);
   fflush(stderr);
   if (status != 0) {
-    gdbShouldBreakHere();
+    debuggerBreakHere();
   }
   chpl_finalize(status, all);
   exit(status);

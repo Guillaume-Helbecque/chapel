@@ -67,6 +67,7 @@ class QualifiedType final {
   static const Kind FUNCTION = uast::Qualifier::FUNCTION;
   static const Kind PARENLESS_FUNCTION = uast::Qualifier::PARENLESS_FUNCTION;
   static const Kind MODULE = uast::Qualifier::MODULE;
+  static const Kind LOOP = uast::Qualifier::LOOP;
   static const Kind INIT_RECEIVER = uast::Qualifier::INIT_RECEIVER;
 
   static const char* kindToString(Kind k);
@@ -74,6 +75,7 @@ class QualifiedType final {
   // Convenience functions to construct param types
   static QualifiedType makeParamBool(Context* context, bool b);
   static QualifiedType makeParamInt(Context* context, int64_t i);
+  static QualifiedType makeParamUint(Context* context, uint64_t i);
   static QualifiedType makeParamString(Context* context, UniqueString s);
   static QualifiedType makeParamString(Context* context, std::string s);
 

@@ -41,6 +41,10 @@
 #include "chpl/util/filesystem.h"
 #include "chpl/util/filtering.h"
 
+#ifdef HAVE_LLVM
+  #include "clangUtil.h"
+#endif
+
 #include "global-ast-vecs.h"
 
 #include <algorithm>
@@ -192,11 +196,13 @@ static Qualifier qualifierForArgIntent(IntentTag intent)
   return QUAL_UNKNOWN;
 }
 
-QualifiedType Symbol::qualType() {
+QualifiedType
+Symbol::computeQualifiedType(bool isFormal, IntentTag intent, Type* type,
+                             Qualifier qual,
+                             bool isConst) {
   QualifiedType ret(dtUnknown, QUAL_UNKNOWN);
-
-  if (ArgSymbol* arg = toArgSymbol(this)) {
-    Qualifier q = qualifierForArgIntent(arg->intent);
+  if (isFormal) {
+    Qualifier q = qualifierForArgIntent(intent);
     if (qual == QUAL_WIDE_REF && (q == QUAL_REF || q == QUAL_CONST_REF)) {
       q = QUAL_WIDE_REF;
       // MPF: Should this be CONST_WIDE_REF in some cases?
@@ -204,11 +210,24 @@ QualifiedType Symbol::qualType() {
     ret = QualifiedType(type, q);
   } else {
     ret = QualifiedType(type, qual);
-    if (hasFlag(FLAG_CONST))
-      ret = ret.toConst();
+    if (isConst) ret = ret.toConst();
   }
 
   return ret;
+
+}
+
+QualifiedType Symbol::qualType() {
+  bool isConst = hasFlag(FLAG_CONST);
+  IntentTag intent = INTENT_BLANK;
+  bool isFormal = false;
+
+  if (auto formal = toArgSymbol(this)) {
+    intent = formal->intent;
+    isFormal = true;
+  }
+
+  return computeQualifiedType(isFormal, intent, type, qual, isConst);
 }
 
 
@@ -510,6 +529,22 @@ void Symbol::maybeGenerateDeprecationWarning(Expr* context) {
       USR_WARN(context, "%s", getSanitizedMsg(getDeprecationMsg()));
       dedupDeprecationWarnings.insert(key);
     }
+  }
+}
+
+std::string Symbol::getFirstEdition() const {
+  if (firstEdition == "") {
+    return editions.front();
+  } else {
+    return firstEdition;
+  }
+}
+
+std::string Symbol::getLastEdition() const {
+  if (lastEdition == "") {
+    return editions.back();
+  } else {
+    return lastEdition;
   }
 }
 
@@ -1254,24 +1289,6 @@ bool isOuterVarOfShadowVar(Expr* expr) {
 *                                                                   *
 ********************************* | ********************************/
 
-#ifdef HAVE_LLVM
-static std::map<FunctionType*, llvm::FunctionType*>
-chapelFunctionTypeToLlvmFunctionType;
-
-bool llvmMapUnderlyingFunctionType(FunctionType* k, llvm::FunctionType* v) {
-  auto it = chapelFunctionTypeToLlvmFunctionType.find(k);
-  if (it != chapelFunctionTypeToLlvmFunctionType.end()) return false;
-  chapelFunctionTypeToLlvmFunctionType.emplace_hint(it, k, v);
-  return true;
-}
-
-llvm::FunctionType* llvmGetUnderlyingFunctionType(FunctionType* t) {
-  auto it = chapelFunctionTypeToLlvmFunctionType.find(t);
-  if (it != chapelFunctionTypeToLlvmFunctionType.end()) return it->second;
-  return nullptr;
-}
-#endif
-
 TypeSymbol::TypeSymbol(const char* init_name, Type* init_type) :
   Symbol(E_TypeSymbol, init_name, init_type),
     llvmImplType(NULL), llvmAlignment(ALIGNMENT_UNINIT),
@@ -1280,6 +1297,7 @@ TypeSymbol::TypeSymbol(const char* init_name, Type* init_type) :
     llvmTbaaAggTypeDescriptor(NULL),
     llvmTbaaStructCopyNode(NULL), llvmConstTbaaStructCopyNode(NULL),
     llvmDIType(NULL),
+    llvmDIForwardType(NULL),
     instantiationPoint(NULL),
     userInstantiationPointLoc(0, NULL)
 {
@@ -1298,6 +1316,9 @@ void TypeSymbol::verify() {
   }
   if (type->symbol != this)
     INT_FATAL(this, "TypeSymbol::type->symbol != TypeSymbol");
+
+  // Verify the 'FunctionType's since they do not have a 'gVec'.
+  if (auto ft = toFunctionType(type)) ft->verify();
 }
 
 

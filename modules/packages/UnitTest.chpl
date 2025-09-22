@@ -49,6 +49,7 @@ Here are the assert functions available in the UnitTest module:
 - :proc:`~Test.assertNotEqual`
 - :proc:`~Test.assertGreaterThan`
 - :proc:`~Test.assertLessThan`
+- :proc:`~Test.assertRegexMatch`
 
 Test Metadata Functions
 -----------------------
@@ -66,42 +67,27 @@ UnitTest module also provides multiple methods for specifying test Metadata:
 Examples
 --------
 
+All examples are run using the `mason test` command, which acts as a test
+runner for the UnitTest module. See :ref:`testing-with-mason` for more info.
+
+.. note::
+
+   These examples can also be run standalone, but that output is not shown here.
+
 Basic Usage
 ^^^^^^^^^^^
 
 Here is a minimal example demonstrating how to use the UnitTest module:
 
-.. code-block:: chapel
-
-   use UnitTest;
-
-   proc celsius2fahrenheit(x) {
-     // we should be returning "(x: real * 9/5)+32"
-     return (x * 9/5)+32;
-   }
-
-   proc test_temperature(test: borrowed Test) throws {
-     // we were expecting 98.6 but since we missed typecasting
-     // the above function returned 98.
-     test.assertFalse(celsius2fahrenheit(37) == 98);
-   }
-
-   UnitTest.main();
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/BasicUsage.chpl
+    :language: chapel
+    :start-after: START_EXAMPLE
+    :end-before: STOP_EXAMPLE
 
 Output:
 
-.. code-block:: bash
-
-  ======================================================================
-  FAIL xyz.chpl: test_temperature()
-  ----------------------------------------------------------------------
-  AssertionError: assertFalse failed. Given expression is True
-
-  ----------------------------------------------------------------------
-  Run 1 test
-
-  FAILED failures = 1
-
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/BasicUsage.good
+    :language: bash
 
 Skipping Tests
 ^^^^^^^^^^^^^^^
@@ -109,139 +95,85 @@ Skipping Tests
 You can skip tests unconditionally with :proc:`~Test.skip` and
 conditionally with :proc:`~Test.skipIf`:
 
-.. code-block:: chapel
-
-   use UnitTest;
-
-   /* calculates factorial */
-   proc factorial(x: int): int {
-     return if x == 0 then 1 else x * factorial(x-1);
-   }
-
-   /*Conditional skip*/
-   proc test1(test: borrowed Test) throws {
-     test.skipIf(factorial(0) != 1,"Base condition is wrong in factorial");
-     test.assertTrue(factorial(5) == 120);
-   }
-
-   /*Unconditional skip*/
-   proc test2(test: borrowed Test) throws {
-     test.skip("Skipping the test directly");
-   }
-
-   UnitTest.main();
-
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/Skip.chpl
+    :language: chapel
+    :start-after: START_EXAMPLE
+    :end-before: STOP_EXAMPLE
 
 Output:
 
-.. code-block:: bash
-
-  ======================================================================
-  SKIPPED xyz.chpl: test2()
-  ----------------------------------------------------------------------
-  TestSkipped: Skipping the test directly
-
-  ----------------------------------------------------------------------
-  Run 1 test
-
-  OK skipped = 1
-
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/Skip.good
+    :language: bash
 
 Specifying locales
 ^^^^^^^^^^^^^^^^^^
 
-You can specify the num of locales of a test using these method.
+You can control the number of locales a test should use with these methods:
 
 :proc:`~Test.addNumLocales`
 :proc:`~Test.maxLocales`
 :proc:`~Test.minLocales`
 
-Here is an example demonstrating how to use the :proc:`~Test.addNumLocales`
+Here is an example demonstrating how to use :proc:`~Test.addNumLocales`
 
-.. code-block:: chapel
-
-  proc test_square(test: borrowed Test) throws {
-    test.addNumLocales(5);
-    var A: [Locales.domain] int;
-    coforall i in 0..numLocales-1 with (ref A) {
-      on Locales(i) {
-        A[i+1] = (i+1)*(i+1);
-      }
-    }
-    test.assertTrue(A[5]==25);
-  }
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/LocalesSquare.chpl
+    :language: chapel
+    :start-after: START_EXAMPLE
+    :end-before: STOP_EXAMPLE
 
 Output:
 
-.. code-block:: bash
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/LocalesSquare.good
+    :language: bash
 
-  ----------------------------------------------------------------------
-  Run 1 test
-
-  OK
 
 You can also specify multiple locales on which your code can run.
 
-.. code-block:: chapel
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/Locales.chpl
+    :language: chapel
+    :start-after: START_EXAMPLE_1
+    :end-before: STOP_EXAMPLE_1
 
-  proc test3(test: borrowed Test) throws {
-    test.addNumLocales(16,8);
-  }
-
-You can mention the range of locales using :proc:`~Test.maxLocales` and
+You can specify the range of locales using :proc:`~Test.maxLocales` and
 :proc:`~Test.minLocales`
 
-.. code-block:: chapel
-
-  proc test4(test: borrowed Test) throws {
-    test.maxLocales(4);
-    test.minLocales(2);
-  }
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/Locales.chpl
+    :language: chapel
+    :start-after: START_EXAMPLE_2
+    :end-before: STOP_EXAMPLE_2
 
 Specifying Dependencies
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 You can specify the order in which tests should run using :proc:`~Test.dependsOn`:
 
-.. code-block:: chapel
-
-   use UnitTest;
-
-   var factorials: list(int);
-
-   // calculates factorial
-   proc factorial(x: int): int {
-     return if x == 0 then 1 else x * factorial(x-1);
-   }
-
-   proc testFillFact(test: borrowed Test) throws {
-     test.skipIf(factorial(0) != 1,"Base condition is wrong in factorial");
-     for i in 1..10 do
-       factorials.pushBack(factorial(i));
-   }
-
-   proc testSumFact(test: borrowed Test) throws {
-     test.dependsOn(testFillFact);
-     var s = 0;
-     for i in factorials.indices do
-       s += factorials[i];
-     test.assertGreaterThan(s,0);
-   }
-
-   UnitTest.main();
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/Dependencies.chpl
+    :language: chapel
+    :start-after: START_EXAMPLE
+    :end-before: STOP_EXAMPLE
 
 Output:
 
-.. code-block:: bash
+.. literalinclude:: ../../../../test/library/packages/UnitTest/doc-examples/Dependencies.good
+    :language: bash
 
-  ----------------------------------------------------------------------
-  Run 2 tests
 
-  OK
+Filtering Tests
+~~~~~~~~~~~~~~~
+
+When running tests, you can run a subset of the tests in a given file by using specifying a filter. This is done by specifying ``--filter`` followed by a regular expression matching the names of the tests to run.
+
+.. note::
+
+   If you are using a build of Chapel without regex support
+   (i.e. ``CHPL_RE2=none``), you can compile your test case with ``-snoRegex``
+   to disable regex support in the test runner. ``--filter`` will then
+   perform simple substring matching instead of regex matching.
 
 */
 module UnitTest {
   use Reflection;
+  use Regex;
   use TestError;
   use List, Map;
   private use IO, IO.FormattedIO;
@@ -256,6 +188,12 @@ module UnitTest {
   config const skippedTestNames: string = "None";
   @chpldoc.nodoc
   config const ranTests: string = "None";
+
+  @chpldoc.nodoc
+  config const filter: string = "";
+  @chpldoc.nodoc
+  config param noRegex: bool = false;
+
   // This is a dummy test to capture the function signature
   private
   proc testSignature(test: borrowed Test) throws { }
@@ -534,6 +472,52 @@ module UnitTest {
     pragma "always propagate line file info"
     proc assertEqual(first, second) throws {
       checkAssertEquality(first, second);
+    }
+
+    /*
+      Assert that x matches the regular expression pattern.
+
+      .. warning::
+
+        This method requires Chapel to be built with `CHPL_RE2=bundled`.
+
+      :arg x: The first string or bytes to match.
+      :arg pattern: The regular expression pattern.
+      :throws AssertionError: If x doesn't match the regex
+    */
+    pragma "insert line file info"
+    pragma "always propagate line file info"
+    proc assertRegexMatch(x: ?t, pattern: t) throws {
+      var re = new regex(pattern);
+      checkAssertRegexMatch(x, re);
+    }
+
+    /*
+      Assert that x matches the pre-compiled regular expression object.
+
+      .. warning::
+
+        This method requires Chapel to be built with `CHPL_RE2=bundled`.
+
+      :arg x: The first string or bytes to match.
+      :arg pattern: The pre-compiled regular expression object.
+      :throws AssertionError: If x doesn't match the regex
+    */
+    pragma "insert line file info"
+    pragma "always propagate line file info"
+    proc assertRegexMatch(x: ?t, re: regex(t)) throws {
+      checkAssertRegexMatch(x, re);
+    }
+
+    pragma "insert line file info"
+    pragma "always propagate line file info"
+    @chpldoc.nodoc
+    proc checkAssertRegexMatch(x: ?t, re: regex(t)) throws {
+      if !re.match(x) {
+        const errorMsg = "assert failed - '%?' doesn't match\
+                          the regular expression '%?'".format(x, re:t);
+        throw new owned AssertionError(errorMsg);
+      }
     }
 
     pragma "insert line file info"
@@ -1088,7 +1072,7 @@ module UnitTest {
         }
       }
       if !canRun {
-        const errorMsg = "Required Locales = {%?}".format(", ".join([i in this.dictDomain] i:string));
+        const errorMsg = "Required Locales = %?".format(", ".join([i in this.dictDomain] i:string));
         throw new owned TestIncorrectNumLocales(errorMsg);
       }
     }
@@ -1192,13 +1176,52 @@ module UnitTest {
 
   private proc testNameFromProcedure(f): string {
     var line = f: string;
-    assert(line.startsWith("proc"));
+    assert(line.startsWith("proc") || line.startsWith("wide proc"));
     var parenIndex = line.find("(");
     assert(parenIndex > -1);
     var name = try! line[(5 : byteIndex)..<parenIndex];
 
     // Adding parentheses to the end makes it easier to detect in stdout.
     return name + "()";
+  }
+
+  @chpldoc.nodoc
+  record Filter {
+    type patType = if noRegex then string else regex(string);
+    const rawPattern: string;
+    const pattern: patType;
+
+    proc init(p: string) {
+      this.rawPattern = p;
+      this.pattern = p;
+    }
+    proc init(raw, p: regex(string)) {
+      this.rawPattern = raw;
+      this.pattern = p;
+    }
+    proc type create(p: string) throws {
+      if noRegex then
+        return new Filter(p);
+      else {
+        import ChplConfig;
+        if ChplConfig.CHPL_RE2 == "none" then
+          compilerError(
+            "Regular expressions are not supported in this Chapel build. " +
+            "Recompile with -snoRegex or build Chapel with CHPL_RE2=bundled.",
+            errorDepth=2
+          );
+        return new Filter(p, new regex(p));
+      }
+    }
+    proc matches(s: string): bool throws {
+      if rawPattern == "" then
+        return true;
+
+      if noRegex then
+        return s.find(this.pattern) != -1;
+      else
+        return this.pattern.search(s).matched;
+    }
   }
 
   /*Runs the tests
@@ -1225,9 +1248,11 @@ module UnitTest {
     // gather all the tests
     param n = __primitive("gather tests", testObjGather.borrow());
 
+    const F = Filter.create(filter);
+
     for param i in 1..n {
       var test_FCF = __primitive("get test by index",i);
-      if (test_FCF: string != tempFcf: string) {
+      if test_FCF: string != tempFcf: string && F.matches(test_FCF:string) {
         testSuite.addTest(test_FCF);
       }
     }

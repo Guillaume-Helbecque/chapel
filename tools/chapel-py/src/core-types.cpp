@@ -33,7 +33,25 @@ using namespace uast;
 
 int ContextObject::init(ContextObject* self, PyObject* args, PyObject* kwargs) {
   Context::Configuration config;
-  config.chplHome = getenv("CHPL_HOME");
+
+  std::string chplHome;
+  bool installed = false;
+  bool fromEnv = false;
+  std::string diagnosticMsg;
+  auto error = findChplHome(nullptr, nullptr, chplHome, installed, fromEnv, diagnosticMsg);
+  if (!diagnosticMsg.empty()) {
+    if (error) {
+      PyErr_SetString(PyExc_RuntimeError, diagnosticMsg.c_str());
+      return -1;
+    } else {
+      PyErr_WarnEx(PyExc_RuntimeWarning, diagnosticMsg.c_str(), 1);
+    }
+  } else if (error) {
+    PyErr_SetString(PyExc_RuntimeError, "Unknown error while finding CHPL_HOME");
+    return -1;
+  }
+
+  config.chplHome = chplHome;
   new (&self->value_) Context(std::move(config));
   self->value_.installErrorHandler(owned<PythonErrorHandler>(new PythonErrorHandler((PyObject*) self)));
 
@@ -153,6 +171,46 @@ PyObject* AstNodeObject::iter(AstNodeObject *self) {
   }
   return wrapIterPair((ContextObject*) self->contextObject, self->value_->children());
 }
+
+PyObject* AstNodeObject::str(AstNodeObject *self) {
+  if (!self->value_) {
+    raiseExceptionForIncorrectlyConstructedType("AstNode");
+    return nullptr;
+  }
+
+  std::stringstream ss;
+  self->value_->stringify(ss, CHPL_SYNTAX);
+  auto typeString = ss.str();
+  return Py_BuildValue("s", typeString.c_str());
+}
+
+PyObject* AstNodeObject::repr(AstNodeObject *self) {
+  if (!self->value_) {
+    raiseExceptionForIncorrectlyConstructedType("AstNode");
+    return nullptr;
+  }
+
+  std::stringstream ss;
+  self->value_->stringify(ss, DEBUG_DETAIL);
+  auto typeString = ss.str();
+  return Py_BuildValue("s", typeString.c_str());
+}
+
+Py_hash_t AstNodeObject::hash(AstNodeObject *self) {
+  return self->value_->id().hash();
+}
+
+PyObject* AstNodeObject::richcompare(AstNodeObject *self, PyObject *other, int op) {
+  if (!PyObject_TypeCheck(other, AstNodeObject::PythonType)) {
+    Py_RETURN_NOTIMPLEMENTED;
+  }
+  auto otherCast = (AstNodeObject*) other;
+  auto& selfId = self->value_->id();
+  auto& otherId = otherCast->value_->id();
+
+  Py_RETURN_RICHCOMPARE(selfId, otherId, op);
+}
+
 
 void ChapelTypeObject_dealloc(ChapelTypeObject* self) {
   Py_XDECREF(self->contextObject);

@@ -86,8 +86,16 @@ module ChapelBase {
   enum iterKind {leader, follower, standalone};
 
   // This flag toggles on the new pointer-based implementation.
-  // It is unstable and experimental.
-  config param fcfsUsePointerImplementation = false;
+  config param useProcedurePointers = false;
+
+  proc chpl_enableProcPtrs(type t) param {
+    if !useProcedurePointers then return false;
+    return isProcedure(t) && !isClass(t);
+  }
+
+  proc chpl_enableProcPtrs(type t1, type t2) param {
+    return chpl_enableProcPtrs(t1) && chpl_enableProcPtrs(t2);
+  }
 
   //
   // assignment on primitive types
@@ -173,6 +181,41 @@ module ChapelBase {
     compilerError("Comparisons between mixed enumerated types not supported by default");
     return false;
   }
+
+  inline operator !=(a: ?t, b: _nilType) where chpl_enableProcPtrs(t) {
+    // Fine for either local or wide since 'NULL' is '0'.
+    return __primitive("!=", a, 0);
+  }
+  inline operator !=(a: _nilType, b: ?t) where chpl_enableProcPtrs(t) {
+    // Fine for either local or wide since 'NULL' is '0'.
+    return __primitive("!=", b, 0);
+  }
+  inline operator ==(a: ?t, b: _nilType) where chpl_enableProcPtrs(t) {
+    // Fine for either local or wide since 'NULL' is '0'.
+    return __primitive("==", a, 0);
+  }
+  inline operator ==(a: _nilType, b: ?t) where chpl_enableProcPtrs(t) {
+    // Fine for either local or wide since 'NULL' is '0'.
+    return __primitive("==", b, 0);
+  }
+
+  inline operator ==(a: ?t1, b: ?t2) where chpl_enableProcPtrs(t1, t2) {
+    if chpl_isLocalProc(t1) && chpl_isLocalProc(t2) {
+      // Fine, both are pointers.
+      return __primitive("==", a, b);
+    } else if chpl_isWideProc(t1) && chpl_isWideProc(t2) {
+      // Fine, both are integers.
+      return __primitive("==", a, b);
+    } else {
+      // Translate both to pointers then compare.
+      const ptr1 = chpl_toLocalProc(a);
+      const ptr2 = chpl_toLocalProc(b);
+      return __primitive("==", ptr1, ptr2);
+    }
+  }
+
+  inline operator !=(a: ?t1, b: ?t2) where chpl_enableProcPtrs(t1, t2) do
+    return !(a == b);
 
   inline operator !=(a: _nilType, b: _nilType) param do return false;
   inline operator !=(a: bool, b: bool) do return __primitive("!=", a, b);
@@ -629,53 +672,46 @@ module ChapelBase {
   inline operator *(a: complex(64), b: imag(32)) do return (-a.im*_i2r(b), a.re*_i2r(b)) : complex(64);
   inline operator *(a: complex(128), b: imag(64)) do return (-a.im*_i2r(b), a.re*_i2r(b)) : complex(128);
 
+  pragma "always propagate line file info"
+  private proc checkDivision(b) {
+    if b == 0 then halt("Attempt to divide by zero");
+  }
+  pragma "always propagate line file info"
+  private proc checkModulus(b) {
+    if b == 0 then halt("Attempt to compute a modulus by zero");
+  }
+
   inline operator /(a: int(8), b: int(8)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
   inline operator /(a: int(16), b: int(16)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
   inline operator /(a: int(32), b: int(32)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
   inline operator /(a: int(64), b: int(64)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
 
   inline operator /(a: uint(8), b: uint(8)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
   inline operator /(a: uint(16), b: uint(16)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
   inline operator /(a: uint(32), b: uint(32)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
   inline operator /(a: uint(64), b: uint(64)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
 
@@ -792,52 +828,36 @@ module ChapelBase {
   //
 
   inline operator %(a: int(8), b: int(8)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
   inline operator %(a: int(16), b: int(16)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
   inline operator %(a: int(32), b: int(32)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
   inline operator %(a: int(64), b: int(64)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
 
   inline operator %(a: uint(8), b: uint(8)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
   inline operator %(a: uint(16), b: uint(16)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
   inline operator %(a: uint(32), b: uint(32)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
   inline operator %(a: uint(64), b: uint(64)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
 
@@ -887,16 +907,21 @@ module ChapelBase {
   // ** on primitive types
   //
 
+  pragma "always propagate line file info"
+  private proc _intExpHelp_checkZero(a, b) {
+    if a == 0 then halt("cannot compute ", a, " ** ", b);
+  }
+
   inline proc _intExpHelp(a: integral, b) where a.type == b.type {
-    if isIntType(b.type) && b < 0 then
-      if a == 0 then
-        halt("cannot compute ", a, " ** ", b);
-      else if a == 1 then
+    if isIntType(b.type) && b < 0 {
+      if boundsChecking then _intExpHelp_checkZero(a, b);
+      if a == 1 then
         return 1;
       else if a == -1 then
         return if b % 2 == 0 then 1 else -1;
       else
         return 0;
+    }
     var i = b, y:a.type = 1, z = a;
     while i != 0 {
       if i % 2 == 1 then
@@ -1175,7 +1200,8 @@ module ChapelBase {
   // left and right shift on primitive types
   //
 
-  inline proc bitshiftChecks(a, b: integral) {
+  pragma "always propagate line file info"
+  proc bitshiftChecks(a, b: integral) {
     use HaltWrappers;
 
     if b < 0 {
@@ -1190,16 +1216,17 @@ module ChapelBase {
     }
   }
 
-  inline proc bitshiftChecks(param a, param b: integral) {
+  pragma "always propagate line file info"
+  proc bitshiftChecks(param a, param b: integral) param {
     if b < 0 {
       param msg = "Cannot bitshift " + a:string + " by " + b:string +
                   " because " + b:string + " is less than 0";
-      compilerError(msg);
+      compilerError(msg, errorDepth=2);
     } else if b >= numBits(a.type) {
       param msg = "Cannot bitshift " + a:string + " by " + b:string +
                   " because " + b:string + " is >= the bitwidth of " +
                   a.type:string;
-      compilerError(msg);
+      compilerError(msg, errorDepth=2);
     }
   }
 
@@ -1246,7 +1273,7 @@ module ChapelBase {
   }
 
   pragma "always propagate line file info"
-  private inline proc checkNotNil(x:borrowed class?) {
+  private proc checkNotNil(x:borrowed class?) {
     import HaltWrappers;
     // Check only if --nil-checks is enabled or user requested
     if chpl_checkNilDereferences || enablePostfixBangChecks {
@@ -1495,6 +1522,11 @@ module ChapelBase {
     return initMethod;
   }
 
+  pragma "always propagate line file info"
+  private proc arrayInitHalt(initMethod) {
+    halt("ArrayInit.", initMethod, " should have been made concrete");
+  }
+
   proc init_elts(x, s, type t, lo=0:s.type) : void {
 
     var initMethod = init_elts_method(s, t);
@@ -1534,7 +1566,7 @@ module ChapelBase {
         }
       }
       otherwise {
-        halt("ArrayInit.", initMethod, " should have been made concrete");
+        arrayInitHalt(initMethod);
       }
     }
   }
@@ -2579,7 +2611,6 @@ module ChapelBase {
 
 
   // implements 'delete' statement
-  pragma "no borrow convert"
   proc chpl__delete(const arg) {
 
     if chpl_isDdata(arg.type) then
@@ -2701,52 +2732,36 @@ module ChapelBase {
   }
 
   inline operator /=(ref lhs:int(8), rhs:int(8)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(rhs);
     __primitive("/=", lhs, rhs);
   }
   inline operator /=(ref lhs:int(16), rhs:int(16)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(rhs);
     __primitive("/=", lhs, rhs);
   }
   inline operator /=(ref lhs:int(32), rhs:int(32)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(rhs);
     __primitive("/=", lhs, rhs);
   }
   inline operator /=(ref lhs:int(64), rhs:int(64)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(rhs);
     __primitive("/=", lhs, rhs);
   }
 
   inline operator /=(ref lhs:uint(8), rhs:uint(8)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(rhs);
     __primitive("/=", lhs, rhs);
   }
   inline operator /=(ref lhs:uint(16), rhs:uint(16)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(rhs);
     __primitive("/=", lhs, rhs);
   }
   inline operator /=(ref lhs:uint(32), rhs:uint(32)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(rhs);
     __primitive("/=", lhs, rhs);
   }
   inline operator /=(ref lhs:uint(64), rhs:uint(64)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(rhs);
     __primitive("/=", lhs, rhs);
   }
 
@@ -2758,52 +2773,36 @@ module ChapelBase {
   }
 
   inline operator %=(ref lhs:int(8), rhs:int(8)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(rhs);
     __primitive("%=", lhs, rhs);
   }
   inline operator %=(ref lhs:int(16), rhs:int(16)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(rhs);
     __primitive("%=", lhs, rhs);
   }
   inline operator %=(ref lhs:int(32), rhs:int(32)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(rhs);
     __primitive("%=", lhs, rhs);
   }
   inline operator %=(ref lhs:int(64), rhs:int(64)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(rhs);
     __primitive("%=", lhs, rhs);
   }
 
   inline operator %=(ref lhs:uint(8), rhs:uint(8)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(rhs);
     __primitive("%=", lhs, rhs);
   }
   inline operator %=(ref lhs:uint(16), rhs:uint(16)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(rhs);
     __primitive("%=", lhs, rhs);
   }
   inline operator %=(ref lhs:uint(32), rhs:uint(32)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(rhs);
     __primitive("%=", lhs, rhs);
   }
   inline operator %=(ref lhs:uint(64), rhs:uint(64)) {
-    if (chpl_checkDivByZero) then
-      if rhs == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(rhs);
     __primitive("%=", lhs, rhs);
   }
 
@@ -2861,6 +2860,10 @@ module ChapelBase {
   where !(isNumericType(lhs.type) && isNumericType(rhs.type)) {
     lhs = lhs ^ rhs;
   }
+
+  inline operator &&=(ref lhs: bool, rhs: bool) do __primitive("&&=", lhs, rhs);
+
+  inline operator ||=(ref lhs: bool, rhs: bool) do __primitive("||=", lhs, rhs);
 
   inline operator >>=(ref lhs:int(?w), rhs:integral) {
     __primitive(">>=", lhs, rhs);
@@ -2984,15 +2987,11 @@ module ChapelBase {
     return __primitive("/", a, b);
   }
   inline operator /(param a: uint(64), b: uint(64)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
   inline operator /(param a: int(64), b: int(64)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to divide by zero");
+    if chpl_checkDivByZero then checkDivision(b);
     return __primitive("/", a, b);
   }
 
@@ -3023,9 +3022,7 @@ module ChapelBase {
   }
   // necessary to support e.g. 10 % myuint
   inline operator %(param a: uint(64), b: uint(64)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
   inline operator %(a: int(64), param b: int(64)) {
@@ -3033,9 +3030,7 @@ module ChapelBase {
     return __primitive("%", a, b);
   }
   inline operator %(param a: int(64), b: int(64)) {
-    if (chpl_checkDivByZero) then
-      if b == 0 then
-        halt("Attempt to compute a modulus by zero");
+    if chpl_checkDivByZero then checkModulus(b);
     return __primitive("%", a, b);
   }
 
@@ -3366,7 +3361,6 @@ module ChapelBase {
                   " construct cannot be invoked on a type");
   }
 
-  pragma "no borrow convert"
   inline proc _removed_cast(in x) {
     return x;
   }

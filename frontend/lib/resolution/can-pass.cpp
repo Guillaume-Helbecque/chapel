@@ -309,7 +309,7 @@ bool CanPassResult::canConvertNumeric(Context* context,
     // don't convert bools to complexes (per spec: "unintended by programmer")
 
     // coerce any integer type to any width complex
-    if (actualT->isNumericType())
+    if (actualT->isIntegralType())
       return true;
 
     // convert smaller complex types
@@ -526,6 +526,22 @@ CanPassResult CanPassResult::canPassSubtypeNonBorrowing(Context* context,
                          /*conversion*/ SUBTYPE);
   }
 
+  // implement conversions to and from chpl_c_string and c_ptr(c_char)
+  auto charType = typeForSysCType(context, USTR("c_char"));
+  auto checkCStringCPtr = [&charType](const Type* maybeCString, const Type* maybeCPtr) {
+    if (!maybeCString->isCStringType()) return false;
+    if (auto cptr = maybeCPtr->toCPtrType()) {
+      return cptr->isConst() && cptr->eltType() == charType.type();
+    }
+    return false;
+  };
+  if (checkCStringCPtr(actualT, formalT) || checkCStringCPtr(formalT, actualT)) {
+    return CanPassResult(/* no fail reason */ {},
+                         /* instantiates */ false,
+                         /*promotes*/ false,
+                         /*conversion*/ SUBTYPE);
+  }
+
   // class types
   if (auto actualCt = actualT->toClassType()) {
     if (auto formalCt = formalT->toClassType()) {
@@ -589,7 +605,28 @@ CanPassResult CanPassResult::canPassSubtypeNonBorrowing(Context* context,
   }
 
   // TODO: c_ptr(t) -> c_ptr(void)
-  // TODO: c_array -> c_ptr(void), c_array(t) -> c_ptr(t)
+
+  const Type* eltType = nullptr;
+  const IntParam* sizeParam = nullptr;
+  if (formalT->isCPtrType() && actualT->isCArrayType(context, eltType, sizeParam)) {
+    auto formalPtr = formalT->toCPtrType();
+
+    // any C array can be passed to a void pointer
+    if (formalPtr->isVoidPtr()) {
+      return CanPassResult(/* no fail reason */ {},
+                           /* instantiates */ false,
+                           /*promotes*/ false,
+                           SUBTYPE);
+    }
+
+    // Like in C, an array can "decay" to a pointer to its first element.
+    if (formalPtr->eltType() == eltType) {
+      return CanPassResult(/* no fail reason */ {},
+                           /* instantiates */ false,
+                           /*promotes*/ false,
+                           SUBTYPE);
+    }
+  }
 
   return fail(FAIL_EXPECTED_SUBTYPE);
 }
@@ -662,6 +699,10 @@ CanPassResult CanPassResult::canConvertTuples(Context* context,
   if (aT->isStarTuple() != fT->isStarTuple()) {
     // Star-tuple-ness differs, so not convertible.
     return fail(FAIL_INCOMPATIBLE_TUPLE_STAR);
+  }
+
+  if (aT->toReferentialTuple(context) == fT) {
+    return convert(TO_REFERENTIAL_TUPLE);
   }
 
   int n = aT->numElements();
@@ -800,8 +841,8 @@ bool CanPassResult::canInstantiateBuiltin(Context* context,
             return true;
 
   if (formalT->isAnyPodType()) {
-    CHPL_UNIMPL("POD types"); // TODO: compute POD-ness
-    return false;
+    auto rc = createDummyRC(context);
+    return Type::isPod(&rc, actualT);
   }
 
   if (formalT->isAnyRealType() && actualT->isRealType())
@@ -867,10 +908,11 @@ tryConvertClassTypeIntoManagerRecordIfNeeded(Context* context,
   // Override the class type to the manager record type
   // mightBeClass used to be `owned` of type ClassType,
   // now it's `_owned` of type RecordType
+  static const auto genericDec = ClassTypeDecorator(ClassTypeDecorator::GENERIC);
   if (aot) {
-    mightBeClass = CompositeType::getOwnedRecordType(context, /*bct*/ nullptr);
+    mightBeClass = CompositeType::getOwnedRecordType(context, /*bct*/ nullptr, genericDec);
   } else if (ast) {
-    mightBeClass = CompositeType::getSharedRecordType(context, /*bct*/ nullptr);
+    mightBeClass = CompositeType::getSharedRecordType(context, /*bct*/ nullptr, genericDec);
   } else {
     mightBeClass = ct->managerRecordType(context);
   }
@@ -878,14 +920,85 @@ tryConvertClassTypeIntoManagerRecordIfNeeded(Context* context,
   return true;
 }
 
-static optional<std::pair<const RecordType*, const RecordType*>>
-shouldConvertClassTypeIntoManagerRecord(Context* context,
-                                        const Type* actualT,
-                                        const Type* formalT) {
+bool
+tryConvertClassTypeOutOfManagerRecordIfNeeded(Context* context,
+                                              const types::Type*& mightBeManagerRecord,
+                                              const types::Type* const& mightBeClass) {
+  if (!mightBeManagerRecord || !mightBeClass) return false;
+
+  auto mr = mightBeManagerRecord->toRecordType();
+  bool otherClassLike =
+    mightBeClass->isClassType() ||
+    mightBeClass->isAnyOwnedType() ||
+    mightBeClass->isAnySharedType() ||
+    mightBeClass->isAnyClassType();
+
+  if (!mr || !otherClassLike) return false;
+
+  const Type* targetManager = nullptr;
+  if (mr->isOwnedRecordType()) {
+    targetManager = AnyOwnedType::get(context);
+  } else if (mr->isSharedRecordType()) {
+    targetManager = AnySharedType::get(context);
+  } else {
+    // not a manager record type
+    return false;
+  }
+
+  // well, the other class is a class-ish thing, and we're _owned or
+  // _shared. So, find the chpl_t field, use that to get the BasicClassType
+  // and nilability, and create the target class type.
+
+  auto rc = createDummyRC(context);
+  auto fields =
+    fieldsForTypeDecl(&rc, mr,
+                      DefaultsPolicy::IGNORE_DEFAULTS);
+
+  for (int i = 0; i < fields.numFields(); i++) {
+    if (fields.fieldName(i) != "chpl_t") continue;
+    auto fieldType = fields.fieldType(i);
+
+    // it's possible that fieldType is unknown (we are the generic _owned).
+    // Otherwise, it better be a class type.
+    if (fieldType.isUnknown()) {
+      mightBeManagerRecord =
+        ClassType::get(context, AnyClassType::get(context), targetManager,
+                       ClassTypeDecorator(ClassTypeDecorator::MANAGED));
+      return true;
+    } else if (!fieldType.isUnknownOrErroneous() &&
+               fieldType.type()->isClassType()) {
+      // we have a class type, so we can use it to create the target class type
+      auto ct = fieldType.type()->toClassType();
+      // _owned(borrowed C) -> owned C
+      // _shared(borrowed C?) -> shared C?
+      auto targetDec =
+        ClassTypeDecorator(ClassTypeDecorator::MANAGED)
+        .copyNilabilityFrom(ct->decorator());
+      mightBeManagerRecord =
+        ClassType::get(context, ct->basicClassType(), targetManager, targetDec);
+      return true;
+    } else {
+      // not a class type, so we can't convert
+      return false;
+    }
+  }
+  CHPL_ASSERT(false && "should not be reachable");
+  return false;
+}
+
+static optional<std::pair<const Type*, const Type*>>
+shouldHandleManagerRecordConversion(Context* context,
+                                    const Type* actualT,
+                                    const Type* formalT) {
   if (tryConvertClassTypeIntoManagerRecordIfNeeded(context, formalT, actualT) ||
       tryConvertClassTypeIntoManagerRecordIfNeeded(context, actualT, formalT)) {
     CHPL_ASSERT(formalT->isRecordType() && actualT->isRecordType());
-    return std::make_pair(actualT->toRecordType(), formalT->toRecordType());
+    return std::make_pair(actualT, formalT);
+  }
+  if (tryConvertClassTypeOutOfManagerRecordIfNeeded(context, formalT, actualT) ||
+      tryConvertClassTypeOutOfManagerRecordIfNeeded(context, actualT, formalT)) {
+    CHPL_ASSERT(formalT->isClassType() && actualT->isClassType());
+    return std::make_pair(actualT, formalT);
   }
 
   return empty;
@@ -1008,7 +1121,7 @@ CanPassResult CanPassResult::canPassScalar(Context* context,
   const Type* formalT = formalQT.type();
   CHPL_ASSERT(actualT && formalT);
   if (auto managerRecordPair =
-           shouldConvertClassTypeIntoManagerRecord(context, actualT, formalT)) {
+           shouldHandleManagerRecordConversion(context, actualT, formalT)) {
     actualT = managerRecordPair->first;
     formalT = managerRecordPair->second;
     actualQT = QualifiedType(actualQT.kind(), actualT, actualQT.param());
@@ -1020,7 +1133,7 @@ CanPassResult CanPassResult::canPassScalar(Context* context,
   //   proc f(a: int(?w), b: int(2*w))
   // when computing an initial candidate, 'b' is unknown
   // but we should allow passing an argument to it.
-  if (formalT->isUnknownType() && !actualQT.isType()) {
+  if (formalT->isUnknownType()) {
     return instantiate();
   }
 
@@ -1077,7 +1190,11 @@ CanPassResult CanPassResult::canPassScalar(Context* context,
     // 'AnyType' has special meaning elsewhere, so it doesn't count as
     // instantiation here.
     if (formalQT.kind() == QualifiedType::TYPE && !formalT->isAnyType()) {
-      return instantiate();
+      if (isTypeGeneric(context, formalQT)) {
+        return instantiate();
+      } else {
+        return passAsIs();
+      }
     }
 
     // otherwise we can pass as-is
@@ -1138,6 +1255,7 @@ CanPassResult CanPassResult::canPassScalar(Context* context,
     case QualifiedType::FUNCTION:
     case QualifiedType::PARENLESS_FUNCTION:
     case QualifiedType::MODULE:
+    case QualifiedType::LOOP:
     case QualifiedType::TYPE_QUERY:
     case QualifiedType::INDEX:
     case QualifiedType::DEFAULT_INTENT:
@@ -1156,15 +1274,7 @@ CanPassResult CanPassResult::canPassScalar(Context* context,
       {
         auto actualTup = actualT->toTupleType();
         if (actualTup != nullptr  && formalT->isTupleType()) {
-          if (actualTup->isVarArgTuple() &&
-              actualTup->toReferentialTuple(context) == formalT) {
-            // Supports code like:
-            //   proc foo(args...) do
-            //     bar(args);
-            //
-            // TODO: Should this register as a conversion?
-            return passAsIs();
-          } else if (formalQT.kind() == QualifiedType::TYPE &&
+          if (formalQT.kind() == QualifiedType::TYPE &&
                 actualTup->toValueTuple(context) == formalT) {
             return passAsIs();
           } else if (formalQT.kind() != QualifiedType::TYPE) {
@@ -1174,6 +1284,14 @@ CanPassResult CanPassResult::canPassScalar(Context* context,
             }
           }
         }
+
+        // See ResolutionCandidate::shouldAllowCoercions: for TYPE
+        // formals, only class type coercions are allowed.
+        if (formalQT.kind() == QualifiedType::TYPE &&
+            (!actualT->isClassType() || !formalT->isClassType())) {
+          break;
+        }
+
         return canPassSubtypeNonBorrowing(context, actualT, formalT);
       }
 
@@ -1215,7 +1333,7 @@ CanPassResult CanPassResult::canPass(Context* context,
   // Scalar passing failing, but promotion may be possible.
   if (formalQtIn.kind() != QualifiedType::TYPE &&
       formalQtIn.kind() != QualifiedType::PARAM) {
-    auto promotionType = getPromotionType(context, actualQtIn);
+    auto promotionType = getPromotionType(context, actualQtIn, /*skipIfRunning */ true);
 
     if (!promotionType.isUnknownOrErroneous()) {
       auto got = canPassScalar(context, promotionType, formalQtIn);
@@ -1369,6 +1487,20 @@ types::QualifiedType::Kind KindProperties::combineKindsMeet(
   auto kp2 = KindProperties::fromKind(kind2);
   kp1.combineWithMeet(kp2);
   return kp1.toKind();
+}
+
+QualifiedType::Kind
+KindProperties::addConstness(QualifiedType::Kind kind) {
+  auto kp = KindProperties::fromKind(kind);
+  kp.setConst(true);
+  return kp.toKind();
+}
+
+QualifiedType::Kind
+KindProperties::addRefness(QualifiedType::Kind kind) {
+  auto kp = KindProperties::fromKind(kind);
+  kp.setRef(true);
+  return kp.toKind();
 }
 
 QualifiedType::Kind KindProperties::toKind() const {

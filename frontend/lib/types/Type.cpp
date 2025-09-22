@@ -130,6 +130,9 @@ void Type::gatherBuiltins(Context* context,
   gatherType(context, map, "range", rangeType);
   gatherType(context, map, "_range", rangeType);
 
+  auto syncType = CompositeType::getSyncType(context);
+  gatherType(context, map, "sync", syncType);
+
   gatherType(context, map, "Error", CompositeType::getErrorType(context));
 
   gatherType(context, map, "domain", DomainType::getGenericDomainType(context));
@@ -167,6 +170,48 @@ void Type::stringify(std::ostream& ss, chpl::StringifyKind stringKind) const {
 }
 
 IMPLEMENT_DUMP(Type);
+
+bool Type::isCArrayType(Context* context, const Type*& outEltType, const IntParam*& outSize) const {
+  auto rec = toRecordType();
+  if (!rec || rec->id().symbolPath() != "CTypes.c_array") return false;
+
+  auto rc = resolution::createDummyRC(context);
+  auto fields = resolution::fieldsForTypeDecl(&rc, rec, resolution::DefaultsPolicy::IGNORE_DEFAULTS);
+  bool foundEltType = false, foundSize = false;
+  for (int i = 0; i < fields.numFields(); i++) {
+    if (fields.fieldName(i) == "eltType") {
+      foundEltType = true;
+      outEltType = fields.fieldType(i).type();
+    } else if (fields.fieldName(i) == USTR("size")) {
+      foundSize = true;
+      auto param = fields.fieldType(i).param();
+      outSize = param ? param->toIntParam() : nullptr;
+    }
+  }
+
+  if (!foundEltType || !foundSize) {
+    context->error(rec->id(), "internal c_array record does not have eltType and size fields");
+    return false;
+  }
+
+  return true;
+}
+
+bool Type::isOwnedRecordType() const {
+  if (auto rec = toRecordType()) {
+    if (rec->id().symbolPath() == USTR("OwnedObject._owned"))
+      return true;
+  }
+  return false;
+}
+
+bool Type::isSharedRecordType() const {
+  if (auto rec = toRecordType()) {
+    if (rec->id().symbolPath() == USTR("SharedObject._shared"))
+      return true;
+  }
+  return false;
+}
 
 bool Type::isStringType() const {
   if (auto rec = toRecordType()) {
@@ -242,10 +287,9 @@ bool Type::isRecordLike() const {
           decorator.isUnknownManagement())) {
       return true;
     }
-  } else if (this->isRecordType() || this->isUnionType()) {
+  } else if (this->isRecordType() || this->isUnionType() || this->isTupleType()) {
     return true;
   }
-  // TODO: tuples?
 
   return false;
 }
@@ -299,6 +343,8 @@ compositeTypeIsPod(resolution::ResolutionContext* rc, const Type* t) {
 
   if (auto cls = t->toClassType()) {
     return !cls->decorator().isManaged();
+  } else if (t->isBasicClassType()) {
+    return false;
   }
 
   auto ct = t->getCompositeType();
@@ -428,7 +474,6 @@ bool Type::needsInitDeinitCall(const Type* t) {
     // OK, can default-initialize enums to first element
     return false;
   /*
-  // TODO: Wire this up when we reintroduce the FunctionType.
   } else if (t->isFunctionType()) {
     return false;
   */

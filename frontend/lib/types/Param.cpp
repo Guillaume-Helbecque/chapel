@@ -211,8 +211,19 @@ optional<Immediate> paramToImmediate(Context* context,
         CHPL_ASSERT(et);
 
         if (ep) {
-          auto numericValueOpt =
-            computeNumericValueOfEnumElement(context, ep->value().id);
+          optional<QualifiedType> numericValueOpt = empty;
+          if (context->isQueryRunning(computeNumericValuesOfEnumElements, std::make_tuple(et->id()))) {
+            // we're still determining the numeric values of the enum elements.
+            // This can happen if one enum element's declaration is trying to
+            // cast another, preceding declaration to its numeric type. E.g.:
+            //
+            //   enum A { red = 1; green = red:int + 2 }
+            //
+            // Use the "initial guess".
+            numericValueOpt = initialNumericValueOfEnumElement(context, ep->value().id).first;
+          } else {
+            numericValueOpt = computeNumericValueOfEnumElement(context, ep->value().id);
+          }
 
           if (!numericValueOpt) {
             auto eltAst = parsing::idToAst(context, ep->value().id)->toEnumElement();
@@ -492,9 +503,9 @@ static QualifiedType enumParamFromNumericValue(Context* context,
   return numericValue;
 }
 
-static bool paramCastAllowed(Context* context,
-                             const QualifiedType& a,
-                             const QualifiedType& b) {
+bool Param::castAllowed(Context* context,
+                        const QualifiedType& a,
+                        const QualifiedType& b) {
   auto at = a.type();
   auto bt = b.type();
 
@@ -541,7 +552,7 @@ static QualifiedType handleParamCast(Context* context,
                                      const AstNode* astForErr,
                                      QualifiedType a,
                                      QualifiedType b) {
-  if (!paramCastAllowed(context, a, b)) {
+  if (!Param::castAllowed(context, a, b)) {
     CHPL_REPORT(context, InvalidParamCast, astForErr, a, b);
     return QualifiedType(QualifiedType::UNKNOWN, ErroneousType::get(context));
   }
@@ -624,13 +635,26 @@ QualifiedType Param::fold(Context* context,
 
 void Param::stringify(std::ostream& ss, chpl::StringifyKind stringKind) const {
 
+  // for debug output, remove newlines so that we don't break output
+  // that expects to be printed on a single line.
+  auto cleanStr = [stringKind](std::string& toClean) {
+    if (stringKind != CHPL_SYNTAX) {
+      std::string::size_type pos = 0;
+      while ((pos = toClean.find('\n', pos)) != std::string::npos) {
+        toClean.replace(pos, 1, "\\n");
+        pos += 2;
+      }
+    }
+    return toClean;
+  };
 
   switch (tag_) {
 #define PARAM_NODE(NAME, VALTYPE) \
     case paramtags::NAME: { \
       const NAME* casted = (const NAME*) this; \
       auto value = casted->value(); \
-      ss << Param::valueToString(value); \
+      std::string valueStr = Param::valueToString(value); \
+      ss << cleanStr(valueStr); \
       break; \
     }
 // Apply the above macros to param-classes-list.h

@@ -84,6 +84,8 @@ std::vector<std::string> getChplFilenames();
 bool isChplSource(const char* filename);
 bool isCHeader(const char* filename);
 bool isCSource(const char* filename);
+bool isStaticLibrary(const char* filename);
+bool isSharedLibrary(const char* filename);
 bool isObjFile(const char* filename);
 bool isDynoLib(const char* filename);
 void addSourceFiles(int numFilenames, const char* filename[]);
@@ -145,8 +147,8 @@ bool readArgsFromFile(std::string path, std::vector<std::string>& cmds,
 void expandInstallationPaths(std::string& arg);
 void expandInstallationPaths(std::vector<std::string>& args);
 
-bool isDirectory(const char* path);
-bool pathExists(const char* path);
+bool isDirectory(std::string_view path);
+bool pathExists(std::string_view path);
 
 char*       chplRealPath(const char* path);
 char*       dirHasFile(const char* dir, const char* file);

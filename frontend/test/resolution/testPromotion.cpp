@@ -101,7 +101,13 @@ static void runProgram(std::vector<const char*> prog, F&& f, Types... types) {
   auto context = &ctx;
   ErrorGuard guard(context);
 
-  std::string program = "module ChapelBase {\n  enum iterKind { standalone, leader, follower };\n}\n";
+  std::string program = R"""(
+module ChapelBase {
+  enum iterKind { standalone, leader, follower };
+  operator =(ref lhs:int, const rhs:int) {}
+  operator =(ref lhs:real, const rhs:real) {}
+}
+)""";
 
   auto addType = [&](auto arg) {
     for (const auto& line : arg.strs())
@@ -421,6 +427,123 @@ static void test19() {
         .defineSerialIterator("1"));
 }
 
+static void test20() {
+  // check that we can promote a field access, as spec'ed.
+  runProgram(
+      {
+        "record pair { var first: int; var second: real; }",
+        "proc R.chpl__promotionType() type do return pair;",
+        "for i in (new R()).second {}",
+      },
+      [](ErrorGuard& guard, const QualifiedType& t) {
+        assert(!t.isUnknownOrErroneous());
+        assert(t.type()->isRealType());
+      },
+      IterableType("R").defineSerialIterator("new pair(0, 0.0)"));
+}
+
+static void test21() {
+  // we can promoted generated binary operator calls
+  runProgram(
+      { "enum color { red = 1, green, blue }",
+        "operator =(ref lhs: color, in rhs: color) {}",
+        "for i in (new R()) : int {}" },
+      [](ErrorGuard& guard, const QualifiedType& t) {
+        assert(!t.isUnknownOrErroneous());
+        assert(t.type()->isIntType());
+      },
+      IterableType("R").definePromotionType("color").defineSerialIterator("color.red"));
+}
+
+static void test22() {
+  // Promotion gets triggered for methods
+  runProgram(
+      { "proc int.foo() do return this;",
+        "for i in (new R()).foo() {}" },
+      [](ErrorGuard& guard, const QualifiedType& t) {
+        assert(!t.isUnknownOrErroneous());
+        assert(t.type()->isIntType());
+      },
+      IterableType("R").definePromotionType("int").defineSerialIterator("1"));
+}
+
+// You can invoke primary methods on a type even if they are not imported
+// into the current scope, because the type's definition scope is considered.
+// However, in production, this rule doesn't apply to promoted methods.
+// Test that in Dyno, it does (which is more consistent).
+//
+// Tracking issue in prod: https://github.com/chapel-lang/chapel/issues/27578
+static void testPromotedMethodNotImported() {
+  auto prog = R"""(
+    module M1 {
+      record R {
+        proc foo() do return 42.0;
+      }
+    }
+    module M2 {
+      use M1;
+
+      record S {
+        proc chpl__promotionType() type do return R;
+        iter these() do yield new R();
+      }
+
+      var s = new S();
+    }
+    module M3 {
+      import M2.s;
+
+      var x = s.foo();
+    }
+  )""";
+
+  auto context = buildStdContext();
+  ErrorGuard guard(context);
+
+  setFileText(context, "input.chpl", prog);
+  auto& res = parseFileToBuilderResultAndCheck(context, UniqueString::get(context, "input.chpl"), UniqueString());
+  assert(res.numTopLevelExpressions() == 3);
+  auto M3 = res.topLevelExpression(2)->toModule();
+  assert(M3->numStmts() == 2);
+  auto xInit = M3->stmt(1)->toVariable()->initExpression();
+
+  auto& rr = resolveModule(context, M3->id());
+  auto& re = rr.byAst(xInit);
+  assert(!re.type().isUnknownOrErroneous());
+  assert(re.type().type()->isPromotionIteratorType());
+  assert(re.type().type()->toPromotionIteratorType()->yieldType().type()->isRealType());
+}
+
+static void testFieldPromotionScoping() {
+  // test that field access promotion works even if the field name itself
+  // is not imported / in scope (it should be found in the receiver scopes).
+  auto prog = R"""(
+    module M1 {
+      record point {
+        var firstElt: real;
+        var secondElt: real;
+      }
+      var A: [1..5] point;
+    }
+
+    module M2 {
+      import M1.{A};
+      var B = A.firstElt;
+
+      proc main() {
+        writeln(B);
+      }
+    }
+  )""";
+
+  auto ctx = buildStdContext();
+  auto vars = resolveTypesOfVariables(ctx, prog, { "B" });
+
+  assert(!vars.at("B").isUnknownOrErroneous());
+  assert(vars.at("B").type()->isArrayType());
+  assert(vars.at("B").type()->toArrayType()->eltType().type()->isRealType());
+}
+
 static void testTertiaryMethod() {
   // tertiary method definitions of chpl__promotionType
   // (defined in the scope of iteration) are not allowed.
@@ -483,7 +606,14 @@ int main() {
     test17();
     test18();
     test19();
+    test20();
+    test21();
+    test22();
   }
+
+  testPromotedMethodNotImported();
+
+  testFieldPromotionScoping();
 
   testTertiaryMethod();
 

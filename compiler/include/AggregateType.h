@@ -167,6 +167,8 @@ public:
   void                        buildCopyInitializer();
 
   Symbol*                     getSubstitution(const char* name)          const;
+  void                        saveGenericSubstitutions();
+  void                        renameInstantiation();
 
   Type*                       getDecoratedClass(ClassTypeDecoratorEnum d);
 
@@ -214,8 +216,6 @@ public:
   // What to delegate to with 'forwarding'
   AList                       forwardingTo;
 
-  const char*                 doc;
-
   // Used during code generation for subclass checking,
   // isa checking. This is the value we store in chpl__cid_XYZ.
   int                         classId;
@@ -239,7 +239,7 @@ public:
 private:
 
   // Only used for LLVM.
-  std::map<std::string, bool> isCArrayFieldMap;
+  llvm::SmallDenseMap<const char*, bool> isCArrayFieldMap;
 
   static ArgSymbol*           createGenericArg(VarSymbol* field);
 
@@ -255,8 +255,6 @@ private:
 
   void                        addClassToHierarchy(
                                           std::set<AggregateType*>& seen);
-
-  void                        renameInstantiation();
 
   AggregateType*              instantiationWithParent(AggregateType* parent, Expr* insnPoint = NULL);
 

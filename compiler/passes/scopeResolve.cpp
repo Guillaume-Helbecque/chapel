@@ -812,6 +812,8 @@ static void handleForallGoto(ForallStmt* forall, GotoStmt* gs) {
 
 static void resolveGotoLabels() {
   forv_Vec(GotoStmt, gs, gGotoStmts) {
+    if (gs->parentSymbol->hasFlag(FLAG_RESOLVED_EARLY)) continue;
+
     SET_LINENO(gs);
 
     Stmt* loop = NULL;
@@ -3087,6 +3089,9 @@ static void removeUnusedModules() {
   // Now remove any module not in the set
   forv_Vec(ModuleSymbol, mod, gModuleSymbols) {
     bool removeIt = (usedModules.count(mod) == 0);
+
+    // The module contains frontend-generated symbols, so do not remove it.
+    if (mod->initFn && mod->initFn->wasResolvedEarly()) removeIt = false;
 
     if (removeIt) {
       INT_ASSERT(mod->defPoint); // we should not be removing e.g. _root

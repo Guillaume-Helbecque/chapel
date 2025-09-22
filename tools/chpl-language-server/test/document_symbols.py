@@ -83,7 +83,7 @@ async def test_document_symbols(client: LanguageClient):
             "operator +(a: myRecord, b: myRecord): myRecord",
             SymbolKind.Operator,
         ),
-        (rng((16, 2), (16, 25)), "proc bar()", SymbolKind.Method),
+        (rng((16, 2), (16, 25)), "proc myRecord.bar()", SymbolKind.Method),
         (rng((17, 2), (17, 19)), "class MyClass", SymbolKind.Class),
         (rng((19, 2), (22, 3)), "enum myEnum", SymbolKind.Enum),
         (rng((20, 4), (20, 5)), "a", SymbolKind.EnumMember),
@@ -185,6 +185,8 @@ async def test_document_symbols_exprs(client: LanguageClient):
         "const v = new (func())();",
         "const w = new unmanaged (func(int, int))(1);",
         "const x = (new shared (func())()): borrowed C?;",
+        "const y: 2 * int = (1, 3);",
+        "const z: (int, real) = (1, 3.0);",
     ]
     file = "\n".join(exprs)
 

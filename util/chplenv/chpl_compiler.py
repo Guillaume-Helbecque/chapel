@@ -24,11 +24,17 @@ def validate_compiler(compiler_val, flag):
         if not os.path.isfile(comp_makefile):
             warning('Unknown compiler: "{0}"'.format(compiler_val))
 
+        # if we are on an EX and not using LLVM, we should be using the prgenv compiler
+        if flag == 'target':
+            prg_compiler = get_prgenv_compiler()
+            if prg_compiler != 'none' and compiler_val != prg_compiler:
+                warning('Prefer using a PrgEnv compiler (CHPL_TARGET_COMPILER={0}) for the C backend'.format(prg_compiler))
+
 
 @memoize
 def get_prgenv_compiler():
     platform_val = chpl_platform.get('target')
-    if platform_val.startswith('cray-x') or platform_val == 'hpe-cray-ex':
+    if 'cray-x' in platform_val or chpl_platform.is_hpe_cray('target'):
         subcompiler = os.environ.get('PE_ENV', 'none')
         if subcompiler != 'none':
             return "cray-prgenv-{0}".format(subcompiler.lower())
@@ -269,12 +275,21 @@ def get_compiler_from_command(command):
     # the following adjustments are to handle a command like
     #    /path/to/gcc-10.exe --some-option
     # where we are looking for just the 'gcc' part.
+    # we also need to consider paths like `/usr/bin/aarch64-linux-gnu-gcc-10`
     first = command.split()[0]
     basename = os.path.basename(first)
-    name = basename.split('-')[0].strip()
-    name = name.split('.')[0].strip()
+    # strip off the dot first
+    name = basename.split('.')[0].strip()
+    name_components = name.split('-')
+    # find the last part of the name, keep searching for one thats not a number
+    last_component = None
+    for component in reversed(name_components):
+        last_component = component.strip()
+        if not last_component.isdigit():
+            break
+    names = (name_components[0], last_component)
     for tup in COMPILERS:
-        if name == tup[1] or name == tup[2]:
+        if tup[1] in names or tup[2] in names:
             return tup[0]
 
     # if it was not one of the above cases we don't know how to
@@ -367,6 +382,16 @@ def get_compiler_command(flag, lang):
     elif lang_upper == 'CXX':
         command = [get_compiler_name_cxx(compiler_val)]
 
+    # if CHPL_*_COMPILER is clang, we may need to adjust the command, because
+    # 'clang' may not exist (it might be clang-VERSION)
+    if compiler_val == 'clang' and (lang_upper == 'CC' or lang_upper == 'CXX') and not which(command[0]):
+        from  chpl_llvm import llvm_versions
+        for v in llvm_versions():
+            newcommand = command[0] + '-' + v
+            if which(newcommand):
+                command[0] = newcommand
+                break
+
     # Adjust the path in two situations:
     #  CHPL_TARGET_COMPILER=llvm -- means use the selected llvm/clang
     #  CHPL_TARGET_COMPILER=clang with CHPL_LLVM=bundled -- use bundled clang
@@ -431,7 +456,7 @@ def get_system_compile_args(flag):
     # Add Homebrew include directory if Homebrew is installed
     homebrew_prefix = homebrew_utils.get_homebrew_prefix()
     if homebrew_prefix:
-        paths.append('-I' + homebrew_prefix + '/include')
+        paths.append('-isystem' + homebrew_prefix + '/include')
 
     return paths
 
@@ -522,10 +547,28 @@ def _main():
                       const='host', default='host')
     parser.add_option('--target', dest='flag', action='store_const',
                       const='target')
+    parser.add_option('--cc', dest='which', action='store_const',
+                      const='c', default=None, help='get CHPL_{flag}_CC')
+    parser.add_option('--cxx', dest='which', action='store_const',
+                      const='c++', help='get CHPL_{flag}_CXX')
+    parser.add_option('--compiler-only', dest='parts', action='store_const',
+                      const='compiler', default='all')
+    parser.add_option('--additional', dest='parts', action='store_const',
+                      const='additional', help='get additional compiler args')
     (options, args) = parser.parse_args()
 
-    compiler_val = get(options.flag)
-    sys.stdout.write("{0}\n".format(compiler_val))
+    if options.which is None:
+        compiler_val = get(options.flag)
+        sys.stdout.write("{0}\n".format(compiler_val))
+    else:
+        compiler = get_compiler_command(options.flag, options.which)
+        if options.parts == 'compiler':
+            sys.stdout.write("{0}\n".format(compiler[0]))
+        elif options.parts == 'additional':
+            sys.stdout.write("{0}\n".format(' '.join(compiler[1:])))
+        else:
+            sys.stdout.write("{0}\n".format(' '.join(compiler)))
+
 
 
 if __name__ == '__main__':
