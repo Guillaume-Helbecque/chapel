@@ -22,32 +22,10 @@ Scope
 Variables in Chapel have a lexical scope within which it is legal to
 access the variable. For example:
 
-.. code-block:: chapel
-
-  module DemonstrateScopes {
-    proc function() {
-      var f: int;
-      // scope of `f` includes the body of this function
-      {
-        // and any nested blocks (including loops, conditionals, etc).
-
-        var x: int;
-        // `x` scope ends here, but `f` scope does not
-      }
-      // it would be an error to access `x` here
-    }
-    // it would be an error to access `f` here
-
-    {
-      var b: int;
-      // `b`s scope extends to the end of this block
-    }
-    // it would be an error to try to use `b` here
-
-    var g: int;
-    // `g` is a global variable and its scope extends
-    // to any code using this module.
-  }
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeChecking.chpl
+ :language: chapel
+ :start-after: START_EXAMPLE_0
+ :end-before: STOP_EXAMPLE_0
 
 A scope can be contained in another scope. For example, the scope of ``x``
 is contained within the scope of ``f`` in the above example. In other
@@ -72,35 +50,10 @@ Note that ``owned`` and ``shared`` variables can be returned or assigned
 without impacting their lifetime. The lifetime checker just checks that a
 ``borrow`` from such a variable does not outlive the variable itself.
 
-.. code-block:: chapel
-
-  module DemonstrateLifetimes {
-    proc function() {
-      var i: int;
-      // `i`s lifetime extends to the end of this block
-      ref r = i;
-      // `r` refers to `i`, so it's lifetime == `i`s lifetime
-      var own = new owned SomeClass();
-      // `own`s lifetime extends to the end of this block,
-      // (at which point the class instance may be deleted)
-      var borrow = own.borrow();
-      // `borrow`s lifetime extends to the end of this block
-      // because its lifetime matches `own`
-    }
-
-    var global: owned SomeClass;
-    proc settingGlobal() {
-      var x = new owned SomeClass();
-      // lifetime of x extends for entire function body
-
-      global = x; // transfers the instance from x to global
-      // leaving x storing `nil`
-
-      // lifetime of `x` extends to here, but an attempt
-      // to use `x` would result in an error from
-      // compile-time nil checking.
-    }
-  }
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeChecking.chpl
+ :language: chapel
+ :start-after: START_EXAMPLE_1
+ :end-before: STOP_EXAMPLE_1
 
 Similarly to scopes, lifetimes may be contained within each other.
 Ultimately, a lifetime is just the scope of some variable, and so we can
@@ -124,74 +77,32 @@ might know that it cannot for other reasons.
 Returning a Reference to a Local Variable
 +++++++++++++++++++++++++++++++++++++++++
 
-.. code-block:: chapel
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeCheckingError1.chpl
+ :language: chapel
+ :start-after: START_EXAMPLE
+ :end-before: STOP_EXAMPLE
 
-  // returnsref.chpl
-  proc refTo(ref x) ref {
-    return x;
-  }
-
-  proc returnsRefLocal() ref // note `ref` return intent
-  {
-    var i: int;
-    return refTo(i); // returns `i` by reference
-                     // but `i` goes out of scope here
-  }
-  ref r = returnsRefLocal();
-  var val = r; // accesses invalid memory
-
-::
-
-  returnsref.chpl:6: In function 'returnsRefLocal':
-  returnsref.chpl:9: error: Reference to scoped variable cannot be returned
-  returnsref.chpl:8: note: consider scope of i
-
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeCheckingError1.good
 
 Returning a Borrow From a Local Owned Instance
 ++++++++++++++++++++++++++++++++++++++++++++++
 
-.. code-block:: chapel
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeCheckingError2.chpl
+ :language: chapel
+ :start-after: START_EXAMPLE
+ :end-before: STOP_EXAMPLE
 
-  // returnsborrow.chpl
-  class SomeClass { var field: int; }
-  proc borrowLocal() {
-    var obj = new owned SomeClass;
-    return obj.borrow(); // returns borrow of `obj`
-    // but `obj` goes out of scope (and `delete`s the instance) here
-  }
-
-  var b = borrowLocal();
-  var y = b.field; // accesses deleted memory
-
-::
-
-  returnsborrow.chpl:3: In function 'borrowLocal':
-  returnsborrow.chpl:5: error: Scoped variable cannot be returned
-  returnsborrow.chpl:4: note: consider scope of obj
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeCheckingError2.good
 
 Assigning a Borrow to something with Longer Scope
 +++++++++++++++++++++++++++++++++++++++++++++++++
 
-.. code-block:: chapel
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeCheckingError3.chpl
+ :language: chapel
+ :start-after: START_EXAMPLE
+ :end-before: STOP_EXAMPLE
 
-  // assignsborrow.chpl
-  class SomeClass { }
-
-  {
-    var bor: borrowed SomeClass;
-    {
-      var obj = new owned SomeClass();
-      bor = obj.borrow(); // borrow of `obj` escapes
-      // but `obj` goes out of scope (and `delete`s the instance) here
-    }
-    writeln(bor); // uses freed memory
-  }
-
-::
-
-  assignsborrow.chpl:8: error: Scoped variable bor would outlive the value it is set to
-  assignsborrow.chpl:7: note: consider scope of obj
-
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeCheckingError3.good
 
 Lifetime Inference
 ==================
@@ -240,48 +151,19 @@ This can be accomplished by placing a ``lifetime`` clause after the
 return type. These ``lifetime`` clauses share some similarities with
 ``where`` clauses. For example:
 
-.. code-block:: chapel
-
-  class C { var x: int; }
-  var globalOwned = new owned C(1);
-  var globalBorrow = globalOwned.borrow();
-
-  // Default lifetime inference assumes that the
-  // returned lifetime is the lifetime of arg,
-  // but that's not appropriate here.
-  //
-  // The lifetime annotation indicates that the returned value
-  // has the lifetime of globalBorrow.
-  proc returnsGlobalBorrow(arg: borrowed C)
-    lifetime return globalBorrow
-  {
-    return globalBorrow;
-  }
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeChecking.chpl
+ :language: chapel
+ :start-after: START_EXAMPLE_2
+ :end-before: STOP_EXAMPLE_2
 
 Other functions need to assert a relationship between the lifetimes of
 their arguments. This pattern comes up with functions that append some
 data to a data structure.
 
-.. code-block:: chapel
-
-  record Collection {
-    type elementType;
-    var element: elementType;
-  }
-
-  // Without lifetime annotation, the compiler will raise an error,
-  // because `this` is assumed to have larger lifetime than `arg`,
-  // and so the assignment will set something with a longer lifetime
-  // to something with a shorter lifetime.
-  //
-  // The lifetime clause `lifetime this < arg` avoids that error
-  // by informing the compiler that `this` (and by extension, `this.element`)
-  // need to have lifetime no longer than `arg`.
-  proc Collection.addElement(arg: elementType)
-    lifetime this < arg
-  {
-    this.element = arg;
-  }
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeChecking.chpl
+ :language: chapel
+ :start-after: START_EXAMPLE_3
+ :end-before: STOP_EXAMPLE_3
 
 Note that the lifetime clause needs to be written in terms of formal
 arguments, including ``this`` for methods, and possible outer variables.
@@ -293,15 +175,10 @@ equivalent.
 In some cases, it is more natural to write the lifetime annotation in
 terms of what assignments the function may make. For example:
 
-.. code-block:: chapel
-
-  proc myswap(ref lhs: borrowed MyClass, ref rhs: borrowed MyClass)
-    lifetime lhs=rhs, rhs=lhs
-  {
-    var tmp = lhs;
-    lhs = rhs;
-    rhs = tmp;
-  }
+.. literalinclude:: ../../../test/technotes/doc-examples/VariableLifetimeChecking.chpl
+ :language: chapel
+ :start-after: START_EXAMPLE_4
+ :end-before: STOP_EXAMPLE_4
 
 Here the lifetime checker ensures that the lifetimes of the actual
 arguments are suitable for performing the assignments between formals

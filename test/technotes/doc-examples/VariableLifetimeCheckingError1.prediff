@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+# 1. Replace VariableLifetimeCheckingError1.chpl by returnsref.chpl
+# 2. Subtract 5 from the line number
+
+awk '
+{
+  # Replace filename
+  gsub("VariableLifetimeCheckingError1\\.chpl", "returnsref.chpl")
+
+  # Adjust line number
+  if (match($0, /:([0-9]+):/)) {
+    num = substr($0, RSTART+1, RLENGTH-2)
+    newnum = num - 5
+    prefix = substr($0, 1, RSTART)
+    suffix = substr($0, RSTART+RLENGTH)
+    $0 = prefix newnum ":" suffix
+  }
+
+  print
+}' $2 > $2.tmp
+
+mv $2.tmp $2

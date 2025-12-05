@@ -1,0 +1,5 @@
+returnsborrow.chpl:3: In function 'borrowLocal':
+returnsborrow.chpl:3: error: Illegal return of dead value
+returnsborrow.chpl:5: note: 'obj' is dead due to deinitialization here
+returnsborrow.chpl:5: error: Scoped variable cannot be returned
+returnsborrow.chpl:4: note: consider scope of obj

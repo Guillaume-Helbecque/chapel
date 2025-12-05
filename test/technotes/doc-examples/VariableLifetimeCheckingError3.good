@@ -1,0 +1,5 @@
+assignsborrow.chpl:11: error: Illegal use of dead value
+assignsborrow.chpl:11: note: 'bor' refers to 'obj'
+assignsborrow.chpl:8: note: 'obj' is dead due to deinitialization here
+assignsborrow.chpl:8: error: Scoped variable bor would outlive the value it is set to
+assignsborrow.chpl:7: note: consider scope of obj

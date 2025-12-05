@@ -1,0 +1,3 @@
+returnsref.chpl:6: In function 'returnsRefLocal':
+returnsref.chpl:9: error: Reference to scoped variable cannot be returned
+returnsref.chpl:8: note: consider scope of i
