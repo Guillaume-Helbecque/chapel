@@ -245,7 +245,7 @@ Common Slurm Settings
 
     export CHPL_LAUNCHER_ACCOUNT=acct
 
-* If you wish wish to use sbatch to launch the job to the queue system, either
+* If you wish to use sbatch to launch the job to the queue system, either
   set the environment variable ``CHPL_LAUNCHER_USE_SBATCH`` or pass the
   ``--generate-sbatch-script`` flag to the executable. In this mode, the output will be
   written by default to a file called <executableName>.<jobID>.out. The
@@ -399,7 +399,7 @@ If you are seeing this error, try setting the following environment variable:
 Note that changing this environment variable, as with any
 ``CHPL_LAUNCHER_*`` variable, does not require rebuilding Chapel or
 recompiling your program.
-  
+
 Changing the _real binary suffix
 ++++++++++++++++++++++++++++++++
 
@@ -464,7 +464,7 @@ that are not actively maintained but may still work.
 =============  ==========================================================
 Launcher Name  Description
 =============  ==========================================================
-mpirun         launch using mpirun (no mpi comm currently) 
+mpirun         launch using mpirun (no mpi comm currently)
 =============  ==========================================================
 
 .. |-| unicode:: U+2011 .. non-breaking hyphen
