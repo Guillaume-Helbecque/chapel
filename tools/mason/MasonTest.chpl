@@ -18,6 +18,8 @@
  * limitations under the License.
  */
 
+/**/
+module MasonTest {
 
 use ArgumentParser;
 use FileSystem;
@@ -34,6 +36,8 @@ use TestResult;
 use Time;
 use TOML;
 
+import ThirdParty.Pathlib.path;
+
 import MasonLogger;
 import MasonPrereqs;
 
@@ -45,7 +49,7 @@ var comm: string;
 var dirs: list(string);
 var files: list(string);
 
-private var log = new MasonLogger.logger("mason test");
+private var log = MasonLogger.getLogger("mason test");
 
 /* Runs the .chpl files found within the /tests directory of Mason packages
    or files which in the path provided.
@@ -82,7 +86,7 @@ proc masonTest(args: [] string) throws {
   if updateFlag.hasValue() {
     skipUpdate = !updateFlag.valueAsBool();
   }
-  if skipUpdate then log.debugln("Will skip updates");
+  if skipUpdate then log.debug("Will skip updates");
 
   if setCommOpt.hasValue() then setComm = setCommOpt.value();
 
@@ -107,25 +111,23 @@ proc masonTest(args: [] string) throws {
   if otherArgs.hasValue() {
     var flagInArgs = false;
     for arg in otherArgs.values() {
-      try! {
-        // try to get option values meant for compilation
-        if flagInArgs && !arg.startsWith('-') {
-          compopts.pushBack(arg);
-          flagInArgs=false;
-        } else if isFile(arg) && arg.endsWith(".chpl") {
-          // assume this is an individual test file
+      // try to get option values meant for compilation
+      if flagInArgs && !arg.startsWith("-") {
+        compopts.pushBack(arg);
+        flagInArgs=false;
+      } else if isFile(arg) && arg.endsWith(".chpl") {
+        // assume this is an individual test file
 
-          files.pushBack(arg);
-        } else if isDir(arg) {
-          // assume this is a test directory
-          dirs.pushBack(arg);
-        } else if arg.startsWith('-') {
-          // assume a flag for compiler
-          compopts.pushBack(arg);
-          flagInArgs=true;
-        } else {
-          searchSubStrings.pushBack(arg);
-        }
+        files.pushBack(arg);
+      } else if isDir(arg) {
+        // assume this is a test directory
+        dirs.pushBack(arg);
+      } else if arg.startsWith("-") {
+        // assume a flag for compiler
+        compopts.pushBack(arg);
+        flagInArgs=true;
+      } else {
+        searchSubStrings.pushBack(arg);
       }
     }
   }
@@ -171,7 +173,7 @@ proc masonTest(args: [] string) throws {
           if testName.find(subString) != -1 {
             isSubString = true;
             if inProjectDir {
-              files.pushBack("".join('test/', testName));
+              files.pushBack("".join("test/", testName));
             } else {
               files.pushBack(testName);
             }
@@ -185,15 +187,17 @@ proc masonTest(args: [] string) throws {
     }
 
     updateLock(skipUpdate);
-    compopts.pushBack("".join("--comm=",comm));
+    compopts.pushBack("--comm="+comm);
     runTests(show, run, parallel, filter, skipUpdate, compopts);
   } catch e: MasonError {
+    log.debugf("Got error '%s', falling back to basic test runner",
+                e.message());
     try! {
       if !searchSubStrings.isEmpty() {
         var testNames: list(string);
 
-        if isDir('.') {
-          var tests = findFiles(startdir='.', recursive=subdir);
+        if isDir(".") {
+          var tests = findFiles(startdir=".", recursive=subdir);
           for test in tests {
             if test.endsWith(".chpl") {
               testNames.pushBack(test);
@@ -228,29 +232,29 @@ private proc runTests(show: bool, run: bool, parallel: bool, filter: string,
 
     // Get project source code and dependencies
     const (sourceList, gitList) = genSourceList(lockFile);
-    const depPath = Path.joinPath(MASON_HOME, 'src');
-    const gitDepPath = Path.joinPath(MASON_HOME, 'git');
+    const depPath = Path.joinPath(MASON_HOME, "src");
+    const gitDepPath = Path.joinPath(MASON_HOME, "git");
 
     getSrcCode(sourceList, skipUpdate, show);
-    getGitCode(gitList, show);
+    getGitCode(gitList, skipUpdate, show);
 
     const project = lockFile["root.name"]!.s;
     const projectPath = "".join(projectHome, "/src/", project, ".chpl");
 
-    // Get system, and external compopts
-    var compopts = cmdLineCompopts;
+    // Get system compopts
+    var compopts = new list(string);
     compopts.pushBack(getTomlCompopts(lockFile));
-    log.debugf("compopts from Mason.toml: %?\n", compopts);
+    log.debug("compopts from Mason.toml: ", compopts);
 
-    log.debugln("Adding prerequisite flags");
+    log.debug("Adding prerequisite flags");
 
     // add prerequisite compopts
     for flag in MasonPrereqs.chplFlags() {
-      log.debugf("+compflag %s\n", flag);
+      log.debug("+compflag ", flag);
       compopts.pushBack(flag);
     }
 
-    log.debugf("Base compopts: %?\n", compopts);
+    log.debug("Base compopts: ", compopts);
 
     // can't use _ since it will leak
     // see https://github.com/chapel-lang/chapel/issues/25926
@@ -263,11 +267,11 @@ private proc runTests(show: bool, run: bool, parallel: bool, filter: string,
         const depSrc = Path.replaceExt(Path.joinPath(depDir, "src", name),
                                        "chpl");
 
-        log.debugf("Adding source dependency %s's flags\n", name);
+        log.debugf("Adding source dependency %s's flags", name);
         compopts.pushBack(depSrc);
 
-        for flag in MasonPrereqs.chplFlags(depDir) {
-          log.debugf("+compflag %s\n", flag);
+        for flag in MasonPrereqs.chplFlags(depDir:path) {
+          log.debug("+compflag ", flag);
           compopts.pushBack(flag);
         }
       }
@@ -277,9 +281,27 @@ private proc runTests(show: bool, run: bool, parallel: bool, filter: string,
     // see https://github.com/chapel-lang/chapel/issues/25926
     @chplcheck.ignore("UnusedLoopIndex")
     for (_x, name, branch, _y) in gitSource.iterList(gitList) {
-      const gitDepSrc = Path.joinPath(gitDepPath, name + "-" + branch,
-                                      'src', name + ".chpl");
+      const depDir = Path.joinPath(gitDepPath, name + "-" + branch);
+      const gitDepSrc = Path.joinPath(depDir, "src", name + ".chpl");
       compopts.pushBack(gitDepSrc);
+      for flag in MasonPrereqs.chplFlags(depDir:path) {
+        log.debug("+compflag ", flag);
+        compopts.pushBack(flag);
+      }
+    }
+
+    // get system deps
+    if const pkgDeps = lockFile.get["system"] {
+      for (_, depInfo) in zip(pkgDeps.A.keys(), pkgDeps.A.values()) {
+        for (k,v) in allFields(depInfo!) {
+          var val = v!;
+          select k {
+            when "libs" do compopts.pushBack(parseCompilerOptions(val));
+             when "includes" do compopts.pushBack(parseCompilerOptions(val));
+            otherwise continue;
+          }
+        }
+      }
     }
 
     if isDir(joinPath(projectHome, "target/test/")) {
@@ -293,7 +315,7 @@ private proc runTests(show: bool, run: bool, parallel: bool, filter: string,
     var testsCompiled: list(string, parSafe=true);
     // get the test names from lockfile or from test directory
     if files.size == 0 && dirs.size == 0 {
-      testNames = getTests(lockFile.borrow(), projectHome);
+      testNames = getTests(lockFile.borrow(), projectHome:path);
       numTests = testNames.size;
     } else {
       try! {
@@ -316,7 +338,7 @@ private proc runTests(show: bool, run: bool, parallel: bool, filter: string,
 
       proc compile(test: string,
                    ref result: TestResult,
-                   ref testsCompiled: list(?)): (string, bool) {
+                   ref testsCompiled: list(?)): (string, bool) throws {
         var testPath: string;
         if isAbsPath(test) {
           testPath = test;
@@ -324,9 +346,9 @@ private proc runTests(show: bool, run: bool, parallel: bool, filter: string,
           if customTest then
             testPath = "".join(cwd,"/",test);
           else
-            testPath = "".join('test/', test);
+            testPath = "".join("test/", test);
         }
-        log.infof("Testing %s\n", testPath);
+        log.info("Testing ", testPath);
         const testName = basename(stripExt(test, ".chpl"));
 
         // get the string of dependencies for compilation
@@ -339,16 +361,21 @@ private proc runTests(show: bool, run: bool, parallel: bool, filter: string,
         }
         const outputLoc =
           joinPath(projectHome, "target", "test", stripExt(testTemp, ".chpl"));
+        const outputDir = Path.dirname(outputLoc);
+        if !exists(outputDir) {
+          mkdir(outputDir, parents=true);
+        }
         var compCommand = new list(string);
         compCommand.pushBack(["chpl", testPath, projectPath, "-o", outputLoc]);
         compCommand.pushBack(compopts);
         compCommand.pushBack(masonCompopts);
-        log.debugf("\t%?\n", compCommand);
+        compCommand.pushBack(cmdLineCompopts);
+        log.debugf("\t%?", compCommand);
         const compilation = runWithStatus(compCommand.toArray(), !show);
         const success = compilation == 0;
 
         if !success {
-          stderr.writeln("compilation failed for " + test);
+          try! stderr.writeln("compilation failed for " + test);
           var errMsg = test + " failed to compile";
           if !show then
             errMsg += "\nTry running 'mason test --show' for more details";
@@ -401,8 +428,9 @@ private proc runTests(show: bool, run: bool, parallel: bool, filter: string,
 
 
 private proc runTestBinary(outputLoc: string, testName: string, filter: string,
-                           ref result, show: bool) {
+                           ref result, show: bool) throws {
   const command = outputLoc;
+  log.debugf("Running '%s' name='%s'", command, testName);
   var testNames: list(string),
       failedTestNames: list(string),
       erroredTestNames: list(string),
@@ -413,6 +441,7 @@ private proc runTestBinary(outputLoc: string, testName: string, filter: string,
     runAndLog(command, testName + ".chpl", filter, result, numLocales,
               testsPassed, testNames, localesCountMap,
               failedTestNames, erroredTestNames, skippedTestNames, show);
+  log.debugf("%s got exitCode=%i", testName, exitCode);
   if exitCode != 0 {
     var newCommand = " ".join(command,"-nl","1");
     if filter != "" then newCommand += " --filter=" + filter;
@@ -429,7 +458,7 @@ private proc runTestBinary(outputLoc: string, testName: string, filter: string,
 
 
 private proc runTestBinaries(projectHome: string, testNames: list(string),
-                             filter: string, ref result, show: bool) {
+                             filter: string, ref result, show: bool) throws {
 
   const cwd = here.cwd();
   for test in testNames {
@@ -454,22 +483,22 @@ private proc printTestResults(ref result, timeElapsed) {
 }
 
 
-private proc getTests(lock: borrowed Toml, projectHome: string) {
+proc getTests(lock: borrowed Toml, projectHome: path) throws {
   var testNames: list(string);
-  const testPath = joinPath(projectHome, "test");
+  const testPath = projectHome / "test";
 
   if const testsToml = lock.get("root.tests") {
     var tests = testsToml.toString();
-    var strippedTests = tests.split(',').strip('[]');
+    var strippedTests = tests.split(",").strip("[]");
     for test in strippedTests {
       const t = test.strip().strip('"');
       testNames.pushBack(t);
     }
-  } else if isDir(testPath) {
-    var tests = findFiles(startdir=testPath, recursive=true, hidden=false);
+  } else if testPath.isDir() {
+    var tests = testPath.findFiles(recursive=true, hidden=false);
     for test in tests {
-      if test.endsWith(".chpl") {
-        testNames.pushBack(getTestPath(test));
+      if test.suffix == ".chpl" {
+        testNames.pushBack(relPath(test:string, testPath:string));
       }
     }
   }
@@ -513,12 +542,14 @@ proc getRuntimeComm() throws {
     if comm != "none" {
       comm = setComm;
     } else {
-      if setComm == "none" then comm = setComm;
+      if setComm == "none" then
+        comm = setComm;
       else {
-        writeln("Trying to execute in a multiLocale environment when ",
-        "communication mechanism is `none`.");
-        writeln("Try changing the communication mechanism");
-        exit(2);
+        throw new MasonError(
+          "Trying to execute in a multiLocale environment when " +
+          "communication mechanism is `none`.\n"+
+          "Try changing the communication mechanism"
+        );
       }
     }
   }
@@ -650,7 +681,7 @@ proc runAndLog(executable, fileName, filter: string, ref result,
       testExecMsg: string;
   var reqLocales = 0;
   var sep1Found = false,
-      haltOccured = false;
+      haltOccurred = false;
   var testNamesStr,
       failedTestNamesStr,
       erroredTestNamesStr,
@@ -685,12 +716,14 @@ proc runAndLog(executable, fileName, filter: string, ref result,
      "--errorTestNames", erroredTestNamesStr, "--ranTests", passedTestStr,
      "--skippedTestNames", skippedTestNamesStr]
   );
+  log.debugf("Exec %?", lst);
   var exec =
     spawn(lst.toArray(),
           stdout = pipeStyle.pipe,
           stderr = pipeStyle.pipe); //Executing the file
   //std output pipe
   while exec.stdout.readLine(line) {
+    log.debug(line.strip(leading=false));
     if line.strip() == separator1 then sep1Found = true;
     else if line.strip() == separator2 && sep1Found {
       var testName = try! currentRunningTests.popBack();
@@ -720,8 +753,12 @@ proc runAndLog(executable, fileName, filter: string, ref result,
   }
   //this is to check the error
   if exec.stderr.readLine(line) {
+    log.debug(line.strip(leading=false));
     var testErrMsg = line;
-    while exec.stderr.readLine(line) do testErrMsg += line;
+    while exec.stderr.readLine(line) {
+      log.debug(line.strip(leading=false));
+      testErrMsg += line;
+    }
     if !currentRunningTests.isEmpty() {
       var testNameIndex = try! currentRunningTests.popBack();
       var testName = testNameIndex;
@@ -730,12 +767,15 @@ proc runAndLog(executable, fileName, filter: string, ref result,
       erroredTestNames.pushBack(testName);
       if show then writeln("Ran ",testName," ERROR");
       result.addError(testName, fileName, testErrMsg);
-      haltOccured =  true;
+      haltOccurred = true;
     }
   }
   exec.wait();//wait till the subprocess is complete
   exitCode = exec.exitCode;
-  if haltOccured {
+  log.debugf("Finished exec, exitCode=%i, haltOccured=%?",
+              exitCode, haltOccurred);
+  if haltOccurred {
+    log.debug("Running a second time");
     exitCode =
       runAndLog(executable, fileName, filter, result, reqNumLocales,
                 testsPassed, testNames, localesCountMap,
@@ -750,6 +790,7 @@ proc runAndLog(executable, fileName, filter: string, ref result,
       }
     }
     localesCountMap.remove(reqLocales);
+    log.debug("Running a third time");
     exitCode =
       runAndLog(executable, fileName, filter, result, reqLocales,
                 testsPassed, testNames, localesCountMap, failedTestNames,
@@ -806,4 +847,6 @@ proc addTestResult(ref result, ref localesCountMap, ref testNames,
       testNames.pushBack(testName);
     }
   }
+}
+
 }

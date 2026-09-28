@@ -103,13 +103,6 @@ target_include_directories(ChplFrontendShared PUBLIC ${CHPL_FRONTEND_INCLUDES})
 
 if (CHPL_LLVM_STATIC_DYNAMIC STREQUAL "static")
   if(APPLE)
-    if (CHPL_LLVM_VERSION VERSION_LESS 14.0)
-      # we see problems with statically linking and using PUBLIC
-      # here because we are building a shared object & that would
-      # include some of the LLVM libraries. But this pattern seems
-      # to work OK with LLVM 14.
-      message(FATAL_ERROR "LLVM >= 14.0 required for MacOS builds")
-    endif()
     # link the LLVM dependencies with the generated .dylib
     # (we get linker errors on Mac OS X here if it uses INTERFACE)
     # an alternative would be to add link option -undefined dynamic_lookup

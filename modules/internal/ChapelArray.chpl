@@ -648,6 +648,11 @@ module ChapelArray {
                     b: string);
     }
   }
+  pragma "last resort"
+  proc chpl__checkRetEltTypeMatch(a, type b) {
+    compilerError("expected an array or iterator but got a value of type ",
+                  a.type:string);
+  }
   proc chpl__checkOutEltTypeMatch(a: [], type b) {
     if (a.eltType != b) {
       compilerError("array element type mismatch in initializing out formal ",
@@ -667,6 +672,14 @@ module ChapelArray {
                     " from iterator with element type ",
                     eltType: string);
     }
+  }
+
+  proc chpl__checkGenericArrayReturn(a: []) { }
+  proc chpl__checkGenericArrayReturn(a: _iteratorRecord) { }
+  pragma "last resort"
+  proc chpl__checkGenericArrayReturn(a) {
+    compilerError("expected an array or iterator but got a value of type ",
+                  a.type:string);
   }
 
   //
@@ -1527,23 +1540,11 @@ module ChapelArray {
     // method we would incur promotion when trying to print arrays.
     @chpldoc.nodoc
     proc serialize(writer, ref serializer) throws {
-      var arrayStyle = writer.styleElement(QIO_STYLE_ELEMENT_ARRAY);
-      var ischpl = arrayStyle == QIO_ARRAY_FORMAT_CHPL && !writer._binary();
-      if rank > 1 && ischpl {
-        throw new owned IllegalArgumentError("Cannot perform Chapel write of multidimensional array.");
-      }
-
       _value.dsiSerialWrite(writer);
     }
 
     @chpldoc.nodoc
     proc ref deserialize(reader, ref deserializer) throws {
-      var arrayStyle = reader.styleElement(QIO_STYLE_ELEMENT_ARRAY);
-      var ischpl = arrayStyle == QIO_ARRAY_FORMAT_CHPL && !reader._binary();
-      if rank > 1 && ischpl {
-        throw new owned IllegalArgumentError("Cannot perform Chapel read of multidimensional array.");
-      }
-
       _value.dsiSerialRead(reader);
     }
 
@@ -3147,7 +3148,7 @@ module ChapelArray {
 
   proc chpl__validateReshape(arr, dom) {
     if dom.size != arr.size then
-      halt("Size mismatch: Can't rehape a ", arr.size,
+      halt("Size mismatch: Can't reshape a ", arr.size,
            "-element array into a ", dom.size, "-element array");
 
     if arr.size > 0 && dom.size > 0 {

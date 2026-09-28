@@ -18,6 +18,9 @@
  * limitations under the License.
  */
 
+/**/
+module MasonBuild {
+
 import MasonPrereqs;
 
 use ArgumentParser;
@@ -28,16 +31,18 @@ use MasonHelp;
 use MasonEnv;
 use MasonUpdate;
 use MasonSystem;
-use MasonExternal;
 use MasonExample;
-use MasonLogger;
+import MasonLogger;
 use Subprocess;
 use TOML;
 
+import ThirdParty.Pathlib.path;
+
 import Path;
+import FileSystem;
 import MasonPrereqs;
 
-private var log = new logger("mason build");
+private var log = MasonLogger.getLogger("mason build");
 
 proc masonBuild(args: [] string) throws {
 
@@ -52,18 +57,14 @@ proc masonBuild(args: [] string) throws {
   var passArgs = parser.addPassThrough();
 
   parser.parseArgs(args);
-  log.debugln("Arguments parsed");
-
-  if passArgs.hasValue() && exampleOpts._present {
-    throw new owned MasonError("Examples do not support `--` syntax");
-  }
+  log.debug("Arguments parsed");
 
   const projectType = getProjectType();
   if projectType == "light" then
     throw new MasonError("Mason light projects do not " +
                          "currently support 'mason build'");
 
-  log.debugln("Project type acquired");
+  log.debug("Project type acquired");
 
   var show = showFlag.valueAsBool();
   var release = releaseFlag.valueAsBool();
@@ -79,12 +80,14 @@ proc masonBuild(args: [] string) throws {
 
   MasonPrereqs.install();
 
-  log.debugf("Is example? %s\n", example);
+  log.debug("Is example? ", example);
   if example {
     var examples = new list(exampleOpts.values());
+    var extraCompopts = new list(passArgs.values());
     runExamples(show=show, run=false, build=true, release=release,
                 skipUpdate=skipUpdate, force=force,
-                examplesRequested=examples);
+                examplesRequested=examples,
+                extraCompopts=extraCompopts, nLocales=1);
   } else {
     if passArgs.hasValue() {
       for val in passArgs.values() do compopts.pushBack(val);
@@ -92,7 +95,7 @@ proc masonBuild(args: [] string) throws {
     const configNames = updateLock(skipUpdate);
     const tomlName = configNames[0];
     const lockName = configNames[1];
-    log.debugln("About to build program");
+    log.debug("About to build program");
     buildProgram(release, show, force, skipUpdate,
                  compopts, tomlName, lockName);
   }
@@ -118,14 +121,16 @@ proc buildProgram(release: bool, show: bool, force: bool, skipUpdate: bool,
   if !isFile(lockPath) then
     throw new owned MasonError("Cannot build: no Mason.lock found");
 
-  const toParse = open(lockPath, ioMode.r);
-  defer toParse.close();
-  var lockFile = parseToml(toParse);
+  var lockFile: shared Toml;
+  {
+    const toParse = open(lockPath, ioMode.r);
+    lockFile = parseToml(toParse);
+  }
   const projectName = lockFile["root.name"]!.s;
 
-  var binLoc = 'debug';
+  var binLoc = "debug";
   if release then
-    binLoc = 'release';
+    binLoc = "release";
 
 
   // build on last modification
@@ -148,20 +153,17 @@ proc buildProgram(release: bool, show: bool, force: bool, skipUpdate: bool,
     // generate list of dependencies and get src code
     var (sourceList, gitList) = genSourceList(lockFile);
 
-    if lockFile.pathExists('external') {
-      spackInstalled();
-    }
     getSrcCode(sourceList, skipUpdate, show);
+    getGitCode(gitList, skipUpdate, show);
 
-    getGitCode(gitList, show);
-
-    // get compilation options including external dependencies
-    var compopts = cmdLineCompopts;
-    compopts.pushBack(getTomlCompopts(lockFile));
+    // get compilation options
+    var compopts = getTomlCompopts(lockFile);
     // Compile Program
-    if compileSrc(lockFile, binLoc, release, compopts, projectHome) {
+    if compileSrc(lockFile, binLoc, release, cmdLineCompopts, compopts,
+                  projectHome, sourceList, gitList) {
       writeln("Build Successful\n");
     } else {
+      invalidateFingerprint(projectName, fingerprintDir);
       throw new MasonError("Build Failed");
     }
   } else {
@@ -175,28 +177,32 @@ proc buildProgram(release: bool, show: bool, force: bool, skipUpdate: bool,
    named after the project folder in which it is
    contained */
 proc compileSrc(lockFile: borrowed Toml, binLoc: string,
-                release: bool, compopts: list(string),
-                projectHome: string) : bool throws {
+                release: bool,
+                cmdLineCompopts: list(string),
+                compopts: list(string),
+                projectHome: string,
+                sourceList: list(srcSource),
+                gitList: list(gitSource)) : bool throws {
 
-  const (sourceList, gitList) = genSourceList(lockFile);
-  const depPath = Path.joinPath(MASON_HOME, 'src');
-  const gitDepPath = Path.joinPath(MASON_HOME, 'git');
+  const depPath = Path.joinPath(MASON_HOME, "src");
+  const gitDepPath = Path.joinPath(MASON_HOME, "git");
   const project = lockFile["root.name"]!.s;
   const pathToProj = Path.replaceExt(Path.joinPath(projectHome,
-                                                   'src',
-                                                   project), 'chpl');
+                                                   "src",
+                                                   project), "chpl");
 
-  const moveTo = Path.joinPath(projectHome, 'target', binLoc, project);
+  const moveTo = Path.joinPath(projectHome, "target", binLoc, project);
 
   if !isFile(pathToProj) {
     throw new MasonError("Mason could not find your project");
   } else {
-    log.debugln("Starting to create compilation command");
+    log.debug("Starting to create compilation command");
 
     var cmd: list(string);
     cmd.pushBack("chpl");
     cmd.pushBack(pathToProj);
-    cmd.pushBack("-o " + moveTo);
+    cmd.pushBack("-o");
+    cmd.pushBack(moveTo);
 
     cmd.pushBack(compopts);
 
@@ -207,11 +213,11 @@ proc compileSrc(lockFile: borrowed Toml, binLoc: string,
     }
 
     for flag in MasonPrereqs.chplFlags() {
-      log.debugf("+compflag %s\n", flag);
+      log.debug("+compflag ", flag);
       cmd.pushBack(flag);
     }
 
-    log.debugf("Base command: %?\n", cmd);
+    log.debug("Base command: ", cmd);
 
     // can't use _ since it will leak
     // see https://github.com/chapel-lang/chapel/issues/25926
@@ -224,11 +230,11 @@ proc compileSrc(lockFile: borrowed Toml, binLoc: string,
         const depSrc = Path.replaceExt(Path.joinPath(depDir, "src", name),
                                        "chpl");
 
-        log.debugf("Adding source dependency %s's flags\n", name);
+        log.debugf("Adding source dependency %s's flags", name);
         cmd.pushBack(depSrc);
 
-        for flag in MasonPrereqs.chplFlags(depDir) {
-          log.debugf("+compflag %s\n", flag);
+        for flag in MasonPrereqs.chplFlags(depDir:path) {
+          log.debug("+compflag ", flag);
           cmd.pushBack(flag);
         }
       }
@@ -238,24 +244,31 @@ proc compileSrc(lockFile: borrowed Toml, binLoc: string,
     // see https://github.com/chapel-lang/chapel/issues/25926
     @chplcheck.ignore("UnusedLoopIndex")
     for (_x, name, branch, _y) in gitSource.iterList(gitList) {
-      const gitDepSrc = Path.joinPath(gitDepPath, name + "-" + branch,
-                                      'src', name + ".chpl");
+      const depDir = Path.joinPath(gitDepPath, name + "-" + branch);
+      const gitDepSrc = Path.joinPath(depDir, "src", name + ".chpl");
       cmd.pushBack(gitDepSrc);
+
+      for flag in MasonPrereqs.chplFlags(depDir:path) {
+        log.debug("+compflag ", flag);
+        cmd.pushBack(flag);
+      }
     }
+
+    cmd.pushBack(cmdLineCompopts);
 
     writef("Compiling [%s] target: %s\n",
             if release then "release" else "debug", project);
 
     // compile Program with deps
-    const command = " ".join(cmd.these());
-    log.debugln("Compilation command: " + command);
+    const command = cmd.toArray();
+    log.debug("Compilation command: " + " ".join(command));
     var compilation = runWithStatus(command);
     if compilation != 0 {
       return false;
     }
 
     // Confirming File Structure
-    return isFile(Path.joinPath(projectHome, 'target', binLoc, project));
+    return isFile(Path.joinPath(projectHome, "target", binLoc, project));
   }
   return false;
 }
@@ -263,14 +276,14 @@ proc compileSrc(lockFile: borrowed Toml, binLoc: string,
 
 /* Generates a list of tuples that holds the git repo
    url and the name for local mason dependency pool */
-proc genSourceList(lockFile: borrowed Toml) {
+proc genSourceList(lockFile: borrowed Toml) throws {
   var sourceList: list(srcSource);
   var gitList: list(gitSource);
-  log.infoln("Generating source list");
+  log.info("Generating source list");
   for (name, package) in zip(lockFile.A.keys(), lockFile.A.values()) {
-    log.debugln("name: "+name);
+    log.debug("name: ", name);
     if package!.tag == fieldtag.fieldToml {
-      if name == "root" || name == "system" || name == "external" then continue;
+      if name == "root" || name == "system" then continue;
       else {
         var toml = lockFile[name]!;
         var version = toml["version"]!.s;
@@ -286,11 +299,11 @@ proc genSourceList(lockFile: borrowed Toml) {
           } else {
             branch = "HEAD";
           }
-          log.debugln("adding to gitList: "+name);
+          log.debug("adding to gitList: ", name);
           gitList.pushBack(new gitSource(url, name, branch, revision));
         } else if toml.pathExists("source") {
           var source = toml["source"]!.s;
-          log.debugln("adding to sourceList: "+name);
+          log.debug("adding to sourceList: ", name);
           sourceList.pushBack(new srcSource(source, name, version));
         }
       }
@@ -301,67 +314,121 @@ proc genSourceList(lockFile: borrowed Toml) {
 
 /* Clones the git repository of each dependency into
    the src code dependency pool */
-proc getSrcCode(sourceList: list(srcSource), skipUpdate, show) throws {
-  var baseDir = MASON_HOME +'/src/';
-  forall (srcURL, name, version) in srcSource.iterList(sourceList) {
+proc getSrcCode(sourceList: list(srcSource),
+                skipUpdate: bool, show: bool) throws {
+  var baseDir = MASON_HOME:path / "src";
+  if !baseDir.isDir() then baseDir.mkdir(parents=true);
+
+  var errors = new list(string, true);
+  forall (srcURL, name, version) in srcSource.iterList(sourceList)
+  with (ref errors) {
     // version of -1 specifies a git dep
     if version != "-1" {
       const nameVers = name + "-" + version;
-      const destination = baseDir + nameVers;
+      const destination = baseDir / nameVers;
       if !depExists(nameVers) {
-        if skipUpdate then
-          throw new MasonError("Dependency cannot be installed when " +
-                               "MASON_OFFLINE is set.");
-        writeln("Downloading dependency: " + nameVers);
-        var getDependency = "git clone -qn "+ srcURL + ' ' + destination +'/';
-        var checkout = "git checkout -q v" + version;
-        if show {
-          getDependency = "git clone -n " + srcURL + ' ' + destination + '/';
-          checkout = "git checkout v" + version;
+        if !skipUpdate {
+          writeln("Downloading dependency: " + nameVers);
+          try {
+            cloneSource(srcURL, destination, quiet=!show, checkout=false);
+            checkoutSource(destination, "v" + version, quiet=!show);
+          } catch e: MasonError {
+            errors.pushBack(e.message());
+          } catch e {
+            errors.pushBack("An unknown error occurred while " +
+                            "installing dependency " + nameVers +
+                            ": " + e.message());
+          }
+        } else {
+          errors.pushBack("Dependency " + nameVers +
+                          " cannot be installed in offline mode");
         }
-        runCommand(getDependency);
-        gitC(destination, checkout);
       }
 
       // add prerequisites
       for prereq in MasonPrereqs.prereqs(destination) {
-        MasonPrereqs.install(destination, prereq);
+        try {
+          MasonPrereqs.install(destination, prereq);
+        } catch e: MasonError {
+          errors.pushBack(e.message());
+        } catch e {
+          errors.pushBack("An unknown error occurred while " +
+                          "installing prerequisites for " + nameVers +
+                          ": " + e.message());
+        }
       }
     }
   }
+  if errors.size > 0 {
+    var errorMsg = "The following errors were encountered while " +
+                   "installing source dependencies:";
+    for err in errors do errorMsg += "\n- " + err;
+    throw new MasonError(errorMsg);
+  }
 }
 
-proc getGitCode(gitList: list(gitSource), show) {
-  if !isDir(MASON_HOME + '/git/') {
-    mkdir(MASON_HOME + '/git/', parents=true);
-  }
-  var baseDir = MASON_HOME +'/git/';
-  forall (srcURL, name, branch, revision) in gitSource.iterList(gitList) {
+proc getGitCode(gitList: list(gitSource),
+                skipUpdate: bool, show: bool) throws {
+  const baseDir = MASON_HOME:path / "git";
+  if !baseDir.isDir() then baseDir.mkdir(parents=true);
+
+  var errors = new list(string, true);
+  forall (srcURL, name, branch, revision) in gitSource.iterList(gitList)
+  with (ref errors) {
     const nameVers = name + "-" + branch;
-    const destination = baseDir + nameVers;
-    if !depExists(nameVers, '/git/') {
-      writeln("Downloading dependency: " + nameVers);
-      var getDependency = "git clone -qn "+ srcURL + ' ' + destination +'/';
-      var checkout = "git checkout -q " + revision;
-      if show {
-        getDependency = "git clone -n " + srcURL + ' ' + destination + '/';
-        checkout = "git checkout " + revision;
+    const destination = baseDir / nameVers;
+    if !depExists(nameVers, "/git/") {
+      if !skipUpdate {
+        writeln("Downloading dependency: " + nameVers);
+        try {
+          cloneSource(srcURL, destination, quiet=!show, checkout=false);
+          checkoutSource(destination, revision, quiet=!show);
+        } catch e: MasonError {
+          errors.pushBack(e.message());
+        } catch e {
+          errors.pushBack("An unknown error occurred while " +
+                          "installing dependency " + nameVers +
+                          ": " + e.message());
+        }
+      } else {
+        errors.pushBack("Dependency " + nameVers +
+                        " cannot be installed in offline mode");
       }
-      runCommand(getDependency);
-      gitC(destination, checkout);
     } else {
       writeln("Checking out specified revision for " + nameVers + "...");
-
-      var checkoutBranch = "git checkout -q " + revision;
-      if show {
-        checkoutBranch = "git checkout " + revision;
+      try {
+        checkoutSource(destination, revision, quiet=!show);
+      } catch e: MasonError {
+        errors.pushBack(e.message());
+      } catch e {
+        errors.pushBack("An unknown error occurred while " +
+                        "checking out dependency " + nameVers +
+                        ": " + e.message());
       }
-      gitC(destination, checkoutBranch);
     }
+
+    // add prerequisites
+    for prereq in MasonPrereqs.prereqs(destination) {
+      try {
+        MasonPrereqs.install(destination, prereq);
+      } catch e: MasonError {
+        errors.pushBack(e.message());
+      } catch e {
+        errors.pushBack("An unknown error occurred while " +
+                        "installing prerequisites for " + nameVers +
+                        ": " + e.message());
+      }
+    }
+  }
+  if errors.size > 0 {
+    var errorMsg = "The following errors were encountered while " +
+                   "installing git dependencies:";
+    for err in errors do errorMsg += "\n- " + err;
+    throw new MasonError(errorMsg);
   }
 }
 
-// Retrieves root table compopts, external compopts, and system compopts
+// Retrieves root table compopts and system compopts
 proc getTomlCompopts(lock: borrowed Toml): list(string) throws {
   var compopts = new list(string);
   // Checks for compilation options are present in Mason.toml
@@ -375,9 +442,9 @@ proc getTomlCompopts(lock: borrowed Toml): list(string) throws {
 
   // get the dependencies, if they exist
   for (name, package) in zip(lock.A.keys(), lock.A.values()) {
-    log.debugln("name: "+name);
+    log.debug("name: ", name);
     if package!.tag != fieldtag.fieldToml then continue;
-    if name == "root" || name == "system" || name == "external" then continue;
+    if name == "root" || name == "system" then continue;
     if const depFlags = package!.get["compopts"] {
       try {
         compopts.pushBack(parseCompilerOptions(depFlags));
@@ -385,26 +452,30 @@ proc getTomlCompopts(lock: borrowed Toml): list(string) throws {
         throw new MasonError("unable to parse compopts for dependency " + name);
       }
     }
+    if const system = package!.get["system"] {
+        for (_, depInfo) in zip(system.A.keys(), system.A.values()) {
+          for (k,v) in allFields(depInfo!) {
+            var val = v!;
+            select k {
+              when "libs" do compopts.pushBack(parseCompilerOptions(val));
+              when "includes" do compopts.pushBack(parseCompilerOptions(val));
+              otherwise continue;
+            }
+          }
+        }
+      }
   }
 
-  if const exDeps = lock.get['external'] {
-    for (_, depInfo) in zip(exDeps.A.keys(), exDeps.A.values()) {
+  if const pkgDeps = lock.get["system"] {
+    for (_, depInfo) in zip(pkgDeps.A.keys(), pkgDeps.A.values()) {
       for (k,v) in allFields(depInfo!) {
         var val = v!;
         select k {
-            when "libs" do compopts.pushBack("-L" + val.s);
-            when "include" do compopts.pushBack("-I" + val.s);
-            when "other" do compopts.pushBack("-I" + val.s);
-            otherwise continue;
-          }
+          when "libs" do compopts.pushBack(parseCompilerOptions(val));
+          when "includes" do compopts.pushBack(parseCompilerOptions(val));
+          otherwise continue;
+        }
       }
-    }
-  }
-  if const pkgDeps = lock.get['system'] {
-    for (_, dep) in zip(pkgDeps.A.keys(), pkgDeps.A.values()) {
-      var depInfo = dep!;
-      compopts.pushBack(depInfo["libs"]!.s);
-      compopts.pushBack("-I" + depInfo["include"]!.s);
     }
   }
   return compopts;
@@ -429,8 +500,8 @@ proc printChplEnv(): string {
     output = runCommand([printchplenv, "--all", "--internal", "--simple"],
                          quiet=true);
   } catch e {
-    log.errorln("Could not run printchplenv to " +
-                "get Chapel environment variables");
+    log.error("Could not run printchplenv to " +
+              "get Chapel environment variables");
   }
   return output;
 }
@@ -456,10 +527,10 @@ proc getInterestingEnvVars(): string {
 
 proc computeFingerprint(
   commandLineCompopts: list(string) = new list(string)
-): string {
+): string throws {
   var fingerprint = "";
   fingerprint += "MasonVersion=" + MASON_VERSION + "\n";
-  fingerprint += "ChapelVersion=" + getChapelVersionStr() + "\n";
+  fingerprint += "ChapelVersion=" + getChapelVersionInfo():string + "\n";
   fingerprint += printChplEnv();
   fingerprint += getInterestingEnvVars();
   fingerprint += "cmdline_compopts=" +
@@ -474,13 +545,13 @@ proc computeFingerprint(
 */
 proc checkFingerprint(projectName:string,
                       fingerprintDir: string,
-                      fingerprint: string): bool {
+                      fingerprint: string): bool throws {
   const fingerprintFile = joinPath(fingerprintDir,
                                    "%s-%s".format(projectName, "fingerprint"));
   if !isFile(fingerprintFile) {
     if !isDir(fingerprintDir) then
       mkdir(fingerprintDir, parents=true);
-    log.debugln("No previous fingerprint found, creating new fingerprint");
+    log.debug("No previous fingerprint found, creating new fingerprint");
     const writer = openWriter(fingerprintFile);
     writer.write(fingerprint);
     return false;
@@ -489,15 +560,26 @@ proc checkFingerprint(projectName:string,
     const old = reader.readAll(string);
     reader.close();
     if old != fingerprint {
-      log.debugln("Fingerprints do not match, rebuild required");
+      log.debug("Fingerprints do not match, rebuild required");
       // update fingerprint
       reader.close();
       const writer = openWriter(fingerprintFile);
       writer.write(fingerprint);
       return false;
     } else {
-      log.debugln("Fingerprints match, no rebuild required");
+      log.debug("Fingerprints match, no rebuild required");
       return true;
     }
   }
+}
+
+proc invalidateFingerprint(projectName:string, fingerprintDir: string) throws {
+  const fingerprintFile = joinPath(fingerprintDir,
+                                   "%s-%s".format(projectName, "fingerprint"));
+  log.debugf("Invalidating fingerprint '%s'", fingerprintFile);
+  if isFile(fingerprintFile) {
+    FileSystem.remove(fingerprintFile);
+  }
+}
+
 }

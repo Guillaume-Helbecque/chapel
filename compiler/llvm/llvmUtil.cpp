@@ -301,28 +301,8 @@ PromotedPair convertValuesToLarger(
   }
 
   //Pointers
-  if(type1->isPointerTy() && type2->isPointerTy()) {
-    llvm::Type *castTy;
-
-#if HAVE_LLVM_VER >= 150
-    // pointers are opaque, so equivalent to always being a void pointer;
-    // the below logic is moot
-    castTy = type1;
-#else
-    llvm::Type* int8_type = llvm::Type::getInt8Ty(value1->getContext());
-    bool t1isVoidStar = (type1->getPointerElementType() == int8_type);
-    bool t2isVoidStar = (type2->getPointerElementType() == int8_type);
-
-    assert(type1->getPointerAddressSpace() == type2->getPointerAddressSpace());
-
-    // if type2 a non-void pointer type, then set castTy to type2
-    // otherwise just use type1
-    if ((t1isVoidStar) && (!t2isVoidStar)) {
-      castTy = type2;
-    } else {
-      castTy = type1;
-    }
-#endif
+  if (type1->isPointerTy() && type2->isPointerTy()) {
+    llvm::Type *castTy = type1;
 
     llvm::Value* cast1 = irBuilder->CreatePointerCast(value1, castTy);
     llvm::Value* cast2 = irBuilder->CreatePointerCast(value2, castTy);
@@ -528,12 +508,7 @@ llvm::Value *convertValueToType(llvm::IRBuilder<>* irBuilder,
       trackLLVMValue(tmp_new);
       llvm::StoreInst* store_cur = irBuilder->CreateStore(value, tmp_cur);
       trackLLVMValue(store_cur);
-#if HAVE_LLVM_VER >= 150
       return trackLLVMValue(irBuilder->CreateLoad(newType, tmp_new));
-#else
-      return trackLLVMValue(irBuilder->CreateLoad(
-                        tmp_new->getType()->getPointerElementType(), tmp_new));
-#endif
     }
   }
 

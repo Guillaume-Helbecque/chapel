@@ -25,12 +25,12 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "chplcgfns.h"
 #include "chpllaunch.h"
 #include "chpl-env.h"
 #include "chpl-mem.h"
 #include "chpltypes.h"
-#include "error.h"
+#include "chpl-error.h"
+#include "chpl-prginfo.h"
 
 #ifndef GASNETRUN_LAUNCHER
 #error GASNETRUN_LAUNCHER must be defined
@@ -300,6 +300,9 @@ static char* chpl_launch_create_command(int argc, char* argv[],
                                             CHPL_RT_MD_FILENAME, -1, 0);
   snprintf(slurmFilename, slurmFilenameLen, "%s%d", baseSBATCHFilename,
            (int)mypid);
+
+  CHPL_RT_PRGINFO_DECLARE(CHPL_RT_ROOT_PROGRAM_PLACEHOLDER,
+                          CHPL_THIRD_PARTY);
 
   if (getenv("CHPL_LAUNCHER_USE_SBATCH") != NULL) {
     slurmFile = fopen(slurmFilename, "w");

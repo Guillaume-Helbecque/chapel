@@ -351,6 +351,12 @@ module ChapelDomain {
     }
   }
 
+  pragma "last resort"
+  proc chpl__checkDomainsMatch(a, b) {
+    compilerError("expected an array or iterator but got a value of type ",
+                  a.type:string);
+  }
+
   proc chpl_countDomHelp(dom, counts) {
     var ranges = dom.dims();
     for param i in 0..dom.rank-1 do
@@ -2794,7 +2800,7 @@ module ChapelDomain {
        Returns a local view of the sub-domain (slice) defined by the provided
        range(s), halting if the slice contains elements that are not local.
     */
-    pragma "no where doc"
+    @chpldoc.noWhereClause
     proc localSlice(r... rank)
     where chpl__isTupleOfRanges(r) &&
           !_value.isDefaultRectangular()
@@ -2920,7 +2926,7 @@ module ChapelDomain {
        do not fit in the new idxType or when the original stride(s)
        are not legal for the new `strides` parameter.
      */
-    pragma "no where doc"
+    @chpldoc.noWhereClause
     proc tryCast(type t: domain)
       where chpl__isRectangularDomType(t) && this.isRectangular()
         &&  this.chpl_domainTryCastIsSafe(t)

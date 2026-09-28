@@ -28,6 +28,9 @@ proc main() {
   breakpoint;
 }
 
+// CHECK: Stop hook #1
+// CHECK-NEXT: Breakpoint [[#BREAKPOINT_START:]]
+
 // CHECK: b methodCallsClass.chpl:8
 // CHECK-NEXT: methodCallsClass`toString
 // CHECK-SAME: methodCallsClass.chpl:8
@@ -38,12 +41,12 @@ proc main() {
 // CHECK-NEXT: methodCallsClass`setter
 // CHECK-SAME: methodCallsClass.chpl:15
 
-// CHECK: stop reason = breakpoint 3
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+2]]
 // CHECK: p this
 // CHECK-NEXT: (methodCallsClass::myClass *) 0x{{0*[0-9a-fA-F]+}}
 // CHECK: c
 
-// CHECK: stop reason = breakpoint 4
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+3]]
 // CHECK: p *this
 // CHECK-NEXT: (methodCallsClass::myClass) {
 // CHECK-NEXT: super = (cid =
@@ -52,20 +55,20 @@ proc main() {
 // CHECK-NEXT: }
 // CHECK: c
 
-// CHECK: stop reason = breakpoint 2
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+1]]
 // CHECK: p this->a
 // CHECK-NEXT: (int(64)) 10
 // CHECK: p ret
 // CHECK-NEXT: (string) "myClass(10, 2.71)"
 // CHECK: c
 
-// CHECK: stop reason = breakpoint 3
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+2]]
 // CHECK: c
 
-// CHECK: stop reason = breakpoint 4
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+3]]
 // CHECK: c
 
-// CHECK: stop reason = breakpoint 2
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+1]]
 // CHECK: frame var
 // CHECK-NEXT: (methodCallsClass::myClass *) this = 0x{{0*[0-9a-fA-F]+}}
 // CHECK-NEXT: (string) ret = "myClass(20, 0.577)"

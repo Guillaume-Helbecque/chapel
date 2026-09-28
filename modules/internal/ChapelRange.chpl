@@ -35,15 +35,9 @@ module ChapelRange {
   @chpldoc.nodoc
   config param useOptimizedRangeIterators = true;
 
-  /* Compile with ``-snewRangeLiteralType`` to switch to using the new rule
-     for determining the idxType of a range literal with param integral bounds
-     and to turn off the deprecation warning for using the old rule.
-
-     The new rule defines such idxType to be the type produced by adding
-     the two bounds. I.e.,``(low..high).idxType`` is ``(low+high).type``
-     when ``low`` and ``high`` are integral params. */
+  @deprecated("newRangeLiteralType has been deprecated and is now the default. This config param will be removed in a future release.")
   @chpldoc.nodoc
-  config param newRangeLiteralType = false;
+  config param newRangeLiteralType = true;
 
   private param unalignedMark = -1;
 
@@ -354,39 +348,9 @@ module ChapelRange {
   //
 
   private
-  proc computeParamRangeIndexType_Old(param low, param high) type {
-    // if either type is int, and the int value fits in the other type,
-    // return the other type
-    if low.type == int &&
-       min(high.type) <= low && low <= max(high.type) {
-      return high.type;
-    } else if high.type == int &&
-              min(low.type) <= high && high <= max(low.type) {
-      return low.type;
-    } else {
-      // otherwise, use the type that '+' would produce.
-      return (low+high).type;
-    }
-  }
-  private
   proc computeParamRangeIndexType(param low, param high) type {
-    if newRangeLiteralType {
-      // The idxType of 'low..high' is the type that '+' would produce.
-      return (low+high).type;
-    }
-    type newRule = (low+high).type;
-    type oldRule = computeParamRangeIndexType_Old(low, high);
-    if newRule == oldRule then
-      return newRule;
-    compilerWarning("the idxType of this range literal ",
-                    low:string, "..", high:string,
-                    " with the low bound of the type ", low.type:string,
-                    " and the high bound of the type ", high.type:string,
-                    " is currently ", oldRule:string,
-          ". In a future release it will be switched to ", newRule:string,
-          ". To switch to this new typing and turn off this warning,",
-          " compile with -snewRangeLiteralType.");
-    return oldRule;
+    // The idxType of 'low..high' is the type that '+' would produce.
+    return (low+high).type;
   }
   proc chpl_isValidRangeIdxType(type t) param {
     return isIntegralType(t) || isEnumType(t) || isBoolType(t);
@@ -626,14 +590,14 @@ module ChapelRange {
 
 
   /* Returns the range's stride. */
-  pragma "no where doc"
+  @chpldoc.noWhereClause
   inline proc range.stride where !hasParamStride() do return _stride;
 
   @chpldoc.nodoc proc range.stride param where hasParamStride() do
     return (if strides == strideKind.one then 1 else -1) : strType;
 
   /* Returns the range's alignment. */
-  pragma "no where doc"
+  @chpldoc.noWhereClause
   inline proc range.alignment where !hasParamAlignment() do
     return chpl_intToIdx(if hasParamAlignmentField() then 0 else _alignment);
 
@@ -642,7 +606,7 @@ module ChapelRange {
 
   /* Returns ``true`` if the range's alignment is unambiguous,
      ``false`` otherwise. */
-  pragma "no where doc"
+  @chpldoc.noWhereClause
   inline proc range.isAligned() where !hasParamAligned() do
     return _alignment != unalignedMark;
 
@@ -1082,7 +1046,7 @@ module ChapelRange {
   }
 
   // tells whether omitting the 'align' clause results in the same range
-  pragma "no where doc"
+  @chpldoc.noWhereClause
   proc range.chpl_isNaturallyAligned()
     where ! hasPosNegUnitStride() && bounds != boundKind.neither
   do if bounds == boundKind.both {
@@ -1614,7 +1578,7 @@ module ChapelRange {
    the original bounds and/or stride do not fit in the new idxType
    or when the original stride is not legal for the new `strides` parameter.
  */
-pragma "no where doc"
+@chpldoc.noWhereClause
 proc range.tryCast(type t: range(?)) where chpl_tryCastIsSafe(this, t) {
   const r = this;
   checkBounds(t, r);
@@ -3228,20 +3192,20 @@ private proc isBCPindex(type t) param do
   // The "actual" counted range iter. Turn the bounds of a low bounded counted
   // range into the bounds of a fully bounded non-strided range. `low..#count`
   // becomes `low..(low + (count - 1))`. Needs to check for negative counts,
-  // and for zero counts iterates over a degenerate `1..0`.
-  iter chpl_direct_counted_range_iter_helper(low, count) {
+  // and for zero counts iterates over a degenerate `1..0`
+  // (the actual range is printed as `low..low-1`, but users never see this iteration)
+  iter chpl_direct_counted_range_iter_helper(low, count): low.type {
     if boundsChecking && isIntType(count.type) && count < 0 then
       HaltWrappers.boundsCheckHalt("With a negative count, the range must have a last index.");
 
     pragma "no user debug info"
-    const start = low;
-    // The cast to uint in the 'then' clause avoids avoids a C compile-time
-    // warnings when 'low' is min(int)
+    const start = if count == 0 then 1:low.type else low;
     pragma "no user debug info"
-    const end = if count == 0 then (low:uint - 1):low.type
+    const end = if count == 0 then 0:low.type
                               else (low + (count:low.type - 1)):low.type;
 
     for i in chpl_direct_param_stride_range_iter(start, end, 1) do yield i;
+
   }
 
 
@@ -3739,41 +3703,27 @@ private proc isBCPindex(type t) param do
   // TODO: hilde
   // These functions should be migrated to a more global location.
 
+  private proc maxBitsType(type x, type y) param do return max(numBits(x), numBits(y));
+  private proc maxBits(x, y) param do return maxBitsType(x.type, y.type);
+  private proc unsignedMagnitude(x: integral) {
+    type u = uint(numBits(x.type));
+    if isIntType(x.type) && x < 0 then
+      return __primitive("u-", x:u);
+    else
+      return x:u;
+  }
   //
   // Return the number in the range 0 <= result < b that is congruent to a (mod b)
   //
-  proc chpl__mod(dividend:integral, modulus:integral)
-    where numBits(dividend.type) >= numBits(modulus.type)
-  {
-    type t = modulus.type;
-    var m = modulus;
-    // The extra check for `m != min(t)` is required to avoid an optimizer
-    // (especially LLVM) determining that `-min(t)` is undefined and inserting
-    // `poison`.
-    if isIntType(t) && m < 0 && m != min(t) then m = -m;
+  proc chpl__mod(dividend:integral, modulus:integral): uint(maxBits(dividend, modulus)) {
+    type u = uint(maxBits(dividend, modulus));
 
-    var tmp = dividend % (m: dividend.type);
-    if isInt(dividend) then
-      if tmp < 0 then tmp += (m: dividend.type);
-
-    return tmp;
-  }
-
-  proc chpl__mod(dividend:integral, modulus:integral)
-    where numBits(dividend.type) < numBits(modulus.type) && isInt(modulus)
-  {
-    type t = modulus.type;
-    var m = modulus;
-    // The extra check for `m != min(t)` is required to avoid an optimizer
-    // (especially LLVM) determining that `-min(t)` is undefined and inserting
-    // `poison`.
-    if isIntType(t) && m < 0 && m != min(t) then m = -m;
-
-    var tmp = (dividend: t) % m;
-    if isInt(dividend) then
-      if tmp < 0 then tmp += m;
-
-    return tmp: dividend.type;
+    const m = unsignedMagnitude(modulus):u;
+    const remainder = unsignedMagnitude(dividend):u % m;
+    if isIntType(dividend.type) && dividend < 0 && remainder != 0 then
+      return m - remainder;
+    else
+      return remainder;
   }
 
 
@@ -3793,14 +3743,12 @@ private proc isBCPindex(type t) param do
                      modulus : integral) : minuend.type
     where minuend.type == subtrahend.type
   {
-    const m = abs(modulus);
-
-    var minMod = chpl__mod(minuend, m);
-    var subMod = chpl__mod(subtrahend, m);
+    var minMod = chpl__mod(minuend, modulus);
+    var subMod = chpl__mod(subtrahend, modulus);
 
     return if minMod < subMod
-      then m: minuend.type  - (subMod - minMod)
-      else minMod - subMod;
+      then (unsignedMagnitude(modulus): minuend.type  - (subMod - minMod)): minuend.type
+      else (minMod - subMod): minuend.type;
   }
 
   proc chpl__diffMod(minuend : integral,

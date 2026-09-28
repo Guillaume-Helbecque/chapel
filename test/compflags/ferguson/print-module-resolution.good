@@ -66,8 +66,6 @@ AtomicsCommon
   from print-module-resolution.ChapelStandard.AtomicsCommon
 ChapelIteratorSupport
   from print-module-resolution.ChapelStandard.ChapelIteratorSupport
-ChapelThreads
-  from print-module-resolution.ChapelStandard.ChapelThreads
 DSIUtil
   from print-module-resolution.ChapelStandard.ChapelTuple.DSIUtil
 ChapelTuple
@@ -90,6 +88,12 @@ ChapelSyncvar
   from print-module-resolution.ChapelStandard.ChapelSyncvar
 ChapelTaskDataHelp
   from print-module-resolution.ChapelStandard.ChapelTaskDataHelp
+ChapelSetProgramInfoDataEntries
+  from print-module-resolution.ChapelStandard.ChapelRuntimeInterface.ChapelProgramRegistration.ChapelSetProgramInfoDataEntries
+ChapelProgramRegistration
+  from print-module-resolution.ChapelStandard.ChapelRuntimeInterface.ChapelProgramRegistration
+ChapelRuntimeInterface
+  from print-module-resolution.ChapelStandard.ChapelRuntimeInterface
 ChapelIOSerialize
   from print-module-resolution.ChapelStandard.LocaleModel.LocaleModelHelpFlat.LocaleModelHelpSetup.ChapelLocale.ChapelIOSerialize
 ChapelNumLocales
@@ -232,12 +236,16 @@ ChapelStaticVars
   from print-module-resolution.ChapelStandard.ChapelStaticVars
 ChapelRemoteVars
   from print-module-resolution.ChapelStandard.ChapelRemoteVars
+ChapelUnion
+  from print-module-resolution.ChapelStandard.ChapelUnion
 AutoGpu
   from print-module-resolution.ChapelStandard.AutoGpu
 stopInitCommDiags
   from print-module-resolution.ChapelStandard.stopInitCommDiags
 ChapelDynamicLoading
   from print-module-resolution.ChapelStandard.ChapelDynamicLoading
+ChapelProgramEntrypoints
+  from print-module-resolution.ChapelStandard.ChapelProgramEntrypoints
 ChapelStandard
   from print-module-resolution.ChapelStandard
 print-module-resolution

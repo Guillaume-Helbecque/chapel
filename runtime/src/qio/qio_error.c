@@ -58,8 +58,8 @@ const char* qio_err_msg(qioerr a) {
 }
 
 qioerr qio_int_to_err(int32_t a) {
-  intptr_t num = a;
-  if( num != 0 ) {
+  uintptr_t num = (uintptr_t) a;
+  if (num != 0) {
     // add a 1 bit on the right to mark it as non-pointer.
     num <<= 1;
     num += 1;

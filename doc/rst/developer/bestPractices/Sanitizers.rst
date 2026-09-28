@@ -97,3 +97,12 @@ code (including internal modules).
 
     chpl <program.chpl> --ccflags=-fsanitize=undefined --ldflags=-fsanitize=undefined
     ./<program>
+
+
+.. note::
+
+    UBSan has been found to interact poorly with some Chapel optimizations.
+    LICM (loop invariant code motion) in particular can result in
+    false positives. Nightly testing with UBSan is done with LICM disabled.
+    If you are using UBSan and seeing what looks like a false positive, try
+    disabling LICM with ``--no-loop-invariant-code-motion``.

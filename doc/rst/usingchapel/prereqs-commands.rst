@@ -1,4 +1,4 @@
-  * Alma Linux 10, 8, 9::
+  * Alma Linux 8, 9, 10::
 
       sudo dnf upgrade
       sudo dnf install epel-release
@@ -7,29 +7,10 @@
       sudo dnf install llvm-devel clang clang-devel
 
 
-  * Alpine 3.20, 3.21, 3.22::
+  * Alpine 3.21, 3.22, 3.23, 3.24::
 
       sudo apk add gcc g++ m4 perl python3 python3-dev bash make gawk git cmake libunwind-dev coreutils
       sudo apk add llvm-dev clang-dev clang-static llvm-static
-
-
-  * Amazon Linux 2 (but note `Amazon Linux 2 CHPL_LLVM==system incompatibility`_)::
-
-      sudo yum install git gcc gcc-c++ m4 perl python tcsh bash perl python python-devel python-setuptools bash make gawk python3 which libunwind-devel
-      sudo yum install wget tar openssl-devel
-      wget https://github.com/Kitware/CMake/releases/download/v3.25.1/cmake-3.25.1.tar.gz
-      tar xvzf cmake-3.25.1.tar.gz
-      cd cmake-3.25.1
-      ./bootstrap
-      make
-      sudo make install
-      sudo update-alternatives --install /usr/bin/cmake cmake /usr/local/bin/cmake 1
-      sudo yum install gcc10 gcc10-c++
-      export CC=gcc10-gcc
-      export CXX=gcc10-g++
-      export CHPL_HOST_CC=gcc10-gcc
-      export CHPL_HOST_CXX=gcc10-g++
-      export CHPL_LLVM=bundled
 
 
   * Amazon Linux 2023::
@@ -45,10 +26,10 @@
       sudo pacman -Syu
       sudo pacman -S base-devel
       sudo pacman -S cmake git python libunwind
-      sudo pacman -S llvm20 clang20
+      sudo pacman -S llvm clang
 
 
-  * CentOS Stream 10::
+  * CentOS Stream 9, 10::
 
       sudo dnf upgrade
       sudo dnf install epel-release
@@ -57,30 +38,21 @@
       sudo dnf install llvm-devel clang clang-devel
 
 
-  * CentOS Stream 9::
-
-      sudo dnf upgrade
-      sudo dnf install epel-release
-      sudo dnf install gcc gcc-c++ m4 perl python3 python3-devel bash make gawk git cmake libunwind-devel
-      sudo dnf install which diffutils
-      sudo dnf install llvm15-devel clang15 clang15-devel
-
-
-  * Debian 11 "Bullseye"::
+  * Debian 12 "Bookworm"::
 
       sudo apt-get update
       sudo apt-get install gcc g++ m4 perl python3 python3-dev bash make mawk git pkg-config cmake libunwind-dev
       sudo apt-get install llvm-16-dev llvm-16 llvm-16-tools clang-16 libclang-16-dev libclang-cpp16-dev libedit-dev
 
 
-  * Debian 12 "Bookworm", 13 "Trixie"::
+  * Debian 13 "Trixie"::
 
       sudo apt-get update
       sudo apt-get install gcc g++ m4 perl python3 python3-dev bash make mawk git pkg-config cmake libunwind-dev
       sudo apt-get install llvm-dev llvm clang libclang-dev libclang-cpp-dev libedit-dev
 
 
-  * Fedora 42::
+  * Fedora 43, 44::
 
       sudo dnf upgrade
       sudo dnf install gcc gcc-c++ m4 perl python3 python3-devel bash make gawk git cmake libunwind-devel
@@ -88,28 +60,20 @@
       sudo dnf install llvm-devel clang clang-devel
 
 
-  * Fedora 43::
-
-      sudo dnf upgrade
-      sudo dnf install gcc gcc-c++ m4 perl python3 python3-devel bash make gawk git cmake libunwind-devel
-      sudo dnf install which diffutils
-      sudo dnf install llvm20-devel clang20 clang20-devel
-
-
-  * FreeBSD 13.5, 14.3::
+  * FreeBSD 13.5, 14.3 (but see note `Outdated FreeBSD testing`_)::
 
       sudo pkg install gcc m4 perl5 python3 bash gmake gawk git pkgconf cmake libunwind
       sudo pkg install llvm
 
 
-  * OpenSuse Leap 15.6, 16.0::
+  * OpenSuse Leap 16.0::
 
       sudo zypper install gcc gcc-c++ m4 perl python3 python3-devel bash make gawk git pkg-config cmake libunwind-devel
       sudo zypper install findutils diffutils
       sudo zypper install llvm-devel clang-devel clang
 
 
-  * Rocky Linux 10, 8, 9::
+  * Rocky Linux 8, 9, 10::
 
       sudo dnf upgrade
       sudo dnf install epel-release
@@ -118,10 +82,31 @@
       sudo dnf install llvm-devel clang clang-devel
 
 
-  * Ubuntu 22.04 "Jammy Jellyfish", 24.04 "Noble Numbat", 25.04 "Plucky Puffin", 25.10 "Questing Quokka"::
+  * Ubuntu 22.04 "Jammy Jellyfish"::
+
+      sudo apt-get update
+      sudo apt-get install gcc g++ m4 perl python3 python3-dev bash make mawk git pkg-config cmake libunwind-dev
+      sudo apt-get install llvm-15-dev llvm-15 llvm-15-tools clang-15 libclang-15-dev libclang-cpp15-dev libedit-dev
+
+
+  * Ubuntu 24.04 "Noble Numbat", 26.04 "Resolute Raccoon"::
 
       sudo apt-get update
       sudo apt-get install gcc g++ m4 perl python3 python3-dev bash make mawk git pkg-config cmake libunwind-dev
       sudo apt-get install llvm-dev llvm clang libclang-dev libclang-cpp-dev libedit-dev
 
 
+Compatibility Notes
+-------------------
+
+Outdated FreeBSD testing
+++++++++++++++++++++++++
+
+Our portability testing for FreeBSD relies on public Vagrant boxes. At time of
+writing (May 2026), we have been unable to find a box for FreeBSD releases
+newer than 14.3. Due to limited resources, and lacking information on how
+widely used Chapel is on FreeBSD, we have not taken on the work of making our
+own box or otherwise continuing to update this test coverage. It is still our
+intention to support FreeBSD as a best effort, so feel free to open bug reports
+for Chapel on FreeBSD versions newer than we test, and/or let us know if this
+lack of testing coverage causes you concern.

@@ -338,7 +338,7 @@ void CallInfo::prepareActual(Context* context,
     bool handledTupleExpansion = false;
     if (auto op = actual->toOpCall()) {
       if (op->op() == USTR("...")) {
-        if (op->numActuals() != 1) {
+        if (!op->isUnaryOp()) {
           if (raiseErrors) {
             context->error(op, "tuple expansion can only accept one argument");
           }
@@ -622,7 +622,8 @@ CallInfo CallInfo::create(Context* context,
 
 CallInfo CallInfo::createWithReceiver(const CallInfo& ci,
                                       QualifiedType receiverType,
-                                      UniqueString rename) {
+                                      UniqueString rename,
+                                      bool isImplicitMethodCall) {
   std::vector<CallInfoActual> newActuals;
   newActuals.push_back(CallInfoActual(receiverType, USTR("this")));
 
@@ -638,6 +639,7 @@ CallInfo CallInfo::createWithReceiver(const CallInfo& ci,
   auto name = rename.isEmpty() ? ci.name_ : rename;
   return CallInfo(name, QualifiedType(),
                   /* isMethodCall */ true,
+                  isImplicitMethodCall,
                   ci.hasQuestionArg_,
                   ci.isParenless_,
                   std::move(newActuals));
@@ -1119,6 +1121,7 @@ TypedFnSignature::getTypedFnSignature(Context* context,
                     TypedFnSignature::WhereClauseResult whereClauseResult,
                     InstantiationState instantiationState,
                     bool isRefinementOnly,
+                    bool usePlaceholders,
                     const TypedFnSignature* instantiatedFrom,
                     const TypedFnSignature* parentFn,
                     Bitmap formalsInstantiated,
@@ -1126,7 +1129,8 @@ TypedFnSignature::getTypedFnSignature(Context* context,
                     OuterVariables outerVariables) {
   QUERY_BEGIN(getTypedFnSignature, context,
               untypedSignature, formalTypes, whereClauseResult,
-              instantiationState, isRefinementOnly, instantiatedFrom, parentFn,
+              instantiationState, isRefinementOnly, usePlaceholders,
+              instantiatedFrom, parentFn,
               formalsInstantiated, formalsErrored,
               outerVariables);
 
@@ -1137,6 +1141,7 @@ TypedFnSignature::getTypedFnSignature(Context* context,
                                              whereClauseResult,
                                              instantiationState,
                                              isRefinementOnly,
+                                             usePlaceholders,
                                              instantiatedFrom,
                                              parentFn,
                                              std::move(formalsInstantiated),
@@ -1156,12 +1161,14 @@ TypedFnSignature::get(Context* context,
                       const TypedFnSignature* parentFn,
                       Bitmap formalsInstantiated,
                       Bitmap formalsErrored,
-                      OuterVariables outerVariables) {
+                      OuterVariables outerVariables,
+                      bool usePlaceholders) {
   return getTypedFnSignature(context, untypedSignature,
                              std::move(formalTypes),
                              whereClauseResult,
                              instantiationState,
                              /* isRefinementOnly */ false,
+                             usePlaceholders,
                              instantiatedFrom,
                              parentFn,
                              std::move(formalsInstantiated),
@@ -1180,6 +1187,7 @@ TypedFnSignature::getInferred(
                              inferredFrom->whereClauseResult(),
                              inferredFrom->instantiationState(),
                              /* isRefinementOnly */ true,
+                             /* usePlaceholders */ false,
                              inferredFrom->inferredFrom(),
                              inferredFrom->parentFn(),
                              inferredFrom->formalsInstantiatedBitmap(),
@@ -1202,6 +1210,7 @@ TypedFnSignature::substitute(Context* context,
                              whereClauseResult(),
                              instantiationState(),
                              isRefinementOnly_,
+                             usePlaceholders_,
                              instantiatedFrom(),
                              parentFn(),
                              formalsInstantiatedBitmap(),
@@ -1455,6 +1464,7 @@ size_t hashPromotedFormalMap(const PromotedFormalMap& map) {
 MostSpecificCandidate
 MostSpecificCandidate::fromTypedFnSignature(ResolutionContext* rc,
                                             const TypedFnSignature* fn,
+                                            const CallInfo& ci,
                                             const FormalActualMap& faMap,
                                             const Scope* scope,
                                             const PoiScope* poiScope,
@@ -1465,7 +1475,7 @@ MostSpecificCandidate::fromTypedFnSignature(ResolutionContext* rc,
   // initializer, it can have substitution-producing statements such
   // as `this.typeField = int`. Now that we have picked this candidate
   // as most specific, it's safe to resolve the body without worrying about
-  // spurious errors from other andidates.
+  // spurious errors from other candidates.
   if (fn->isInitializer()) {
     auto instantiationPoiScope =
       Resolver::poiScopeOrNull(rc->context(), fn, scope, poiScope);
@@ -1479,6 +1489,9 @@ MostSpecificCandidate::fromTypedFnSignature(ResolutionContext* rc,
 
   int coercionFormal = -1;
   int coercionActual = -1;
+  int raceyOutFormal = -1;
+  int raceyOutActual = -1;
+  bool promoted = !promotedFormals.empty();
   SyncReadsList syncReads;
   for (auto fa : faMap.byFormals()) {
     auto& formalType = fa.formalType();
@@ -1497,15 +1510,29 @@ MostSpecificCandidate::fromTypedFnSignature(ResolutionContext* rc,
         got.conversionKind() != CanPassResult::TO_REFERENTIAL_TUPLE) {
       if (coercionFormal == -1 && coercionActual == -1) {
         coercionFormal = fa.formalIdx();
-        coercionActual = fa.actualIdx();
+        coercionActual = ci.originalActualIdx(fa.actualIdx());
       }
     }
+
+    // If this candidate is being turned into an iterator via promotion,
+    // flag any formals that are scalar but 'out' or 'inout', since they will
+    // be potentially written to in parallel and thus racey / invalid.
+    if (promoted && (formalType.kind() == QualifiedType::OUT ||
+                     formalType.kind() == QualifiedType::INOUT)) {
+      if (promotedFormals.find(fa.formalIdx()) == promotedFormals.end()) {
+        if (raceyOutFormal == -1 && raceyOutActual == -1) {
+          raceyOutFormal = fa.formalIdx();
+          raceyOutActual = ci.originalActualIdx(fa.actualIdx());
+        }
+      }
+    }
+
     if (got.conversionKind() & CanPassResult::READS) {
       syncReads.push_back(std::make_pair(fa.formalIdx(), fa.actualIdx()));
     }
   }
 
-  return MostSpecificCandidate(fn, std::move(newFaMap), promotedFormals, coercionFormal, coercionActual, syncReads);
+  return MostSpecificCandidate(fn, std::move(newFaMap), promotedFormals, ci.isExplicitMethodCall(), coercionFormal, coercionActual, raceyOutFormal, raceyOutActual, syncReads);
 }
 
 MostSpecificCandidate
@@ -1516,7 +1543,7 @@ MostSpecificCandidate::fromTypedFnSignature(ResolutionContext* rc,
                                             const PoiScope* poiScope,
                                             const PromotedFormalMap& promotedFormals) {
   auto faMap = FormalActualMap(fn, ci);
-  return MostSpecificCandidate::fromTypedFnSignature(rc, fn, faMap, scope, poiScope, promotedFormals);
+  return MostSpecificCandidate::fromTypedFnSignature(rc, fn, ci, faMap, scope, poiScope, promotedFormals);
 }
 
 void MostSpecificCandidate::stringify(std::ostream& ss,
@@ -1646,6 +1673,19 @@ void AssociatedAction::stringify(std::ostream& ss,
     ss << " type=";
     type_.stringify(ss, stringKind);
   }
+  if (tupleEltIdx_) {
+    ss << " tuple-elt-idx=" << *tupleEltIdx_;
+  }
+
+  ss << " sub-actions: {";
+  for (size_t i = 0; i < subActions_.size(); i++) {
+    ss << "";
+    subActions_[i].stringify(ss, stringKind);
+    if (i < subActions_.size() - 1) {
+      ss << ", ";
+    }
+  }
+  ss << "}";
 }
 
 void ResolvedExpression::stringify(std::ostream& ss,
@@ -2129,6 +2169,7 @@ IMPLEMENT_DUMP(CallInfoActual);
 IMPLEMENT_DUMP(CallInfo);
 IMPLEMENT_DUMP(MostSpecificCandidates);
 IMPLEMENT_DUMP(CallResolutionResult);
+IMPLEMENT_DUMP(AssociatedAction);
 IMPLEMENT_DUMP(SimpleMethodLookupHelper);
 IMPLEMENT_DUMP(TypedMethodLookupHelper);
 IMPLEMENT_DUMP(ResolvedFunction);

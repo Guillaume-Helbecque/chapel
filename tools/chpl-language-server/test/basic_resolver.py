@@ -118,11 +118,99 @@ async def test_go_to_call_generic(client: LanguageClient):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail
+async def test_goto_type_def_member_field(client: LanguageClient):
+    """
+    Ensure that goto-type-definition works on a field accessed via implicit
+    'this' inside a method body (issue #28574).
+    """
+
+    file = """
+           record myOtherRec {
+             proc foo(x) { }
+           }
+           record myRec {
+             var x: myOtherRec;
+             proc doIt() {
+               var y = x;
+               x.foo(1);
+               y.foo(1);
+             }
+           }
+           var r: myRec;
+           r.doIt();
+           """
+
+    async with source_file(client, file) as doc:
+        # Both 'y' and 'x' are of type 'myOtherRec' and go-to-type-def
+        # should take you there.
+        await check_goto_type_def(client, doc, pos((6, 8)), pos((0, 7)))
+        await check_goto_type_def(client, doc, pos((6, 12)), pos((0, 7)))
+        await check_goto_type_def(client, doc, pos((7, 4)), pos((0, 7)))
+        await check_goto_type_def(client, doc, pos((8, 4)), pos((0, 7)))
+
+
+@pytest.mark.asyncio
+async def test_goto_type_classes(client: LanguageClient):
+    """
+    Ensure that goto-type-definition works on a class type.
+    """
+
+    template = """
+        class C {{ }}
+
+        var c = new {}();
+        var cb = c.borrow();
+        var cu = cb:unmanaged;
+        """
+    init_exprs = [
+        "C",
+        "C?",
+        "owned C",
+        "owned C?",
+        "shared C",
+        "unmanaged C",
+        "unmanaged C?",
+    ]
+    for init_expr in init_exprs:
+        file = template.format(init_expr)
+        async with source_file(client, file) as doc:
+            await check_goto_type_def(
+                client, doc, pos((2, 4)), pos((0, 6)), "class C"
+            )
+            await check_goto_type_def(
+                client, doc, pos((3, 5)), pos((0, 6)), "class C"
+            )
+            await check_goto_type_def(
+                client, doc, pos((4, 6)), pos((0, 6)), "class C"
+            )
+
+
+@pytest.mark.asyncio
+async def test_goto_type_enum(client: LanguageClient):
+    """
+    Ensure that goto-type-definition works on an enum type.
+    """
+
+    file = """
+           enum E { A, B, C }
+           var e = E.A;
+           var e1 = e;
+           """
+
+    async with source_file(client, file) as doc:
+        await check_goto_type_def(
+            client, doc, pos((1, 4)), pos((0, 5)), "enum E"
+        )
+        await check_goto_type_def(
+            client, doc, pos((2, 5)), pos((0, 5)), "enum E"
+        )
+
+
+@pytest.mark.asyncio
 async def test_string(client: LanguageClient):
     """
     Ensure that goto-type works on a string.
-    This should work, but currently crashes dyno.
+    This used to crash Dyno.
     """
 
     file = """
@@ -133,9 +221,6 @@ async def test_string(client: LanguageClient):
         string_loc = internal_module("String")
         await check_goto_type_def(
             client, doc, pos((0, 4)), string_loc, "record _string"
-        )
-        await check_goto_type_def(
-            client, doc, pos((0, 12)), string_loc, "record _string"
         )
 
 

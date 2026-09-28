@@ -62,11 +62,18 @@ else
   exit
 fi
 
-if [ "$ASAN" = "address" ]
+if [ "$ASAN" != "none" ]
 then
-  TEST_CC="$TEST_CC -fsanitize=address"
-  TEST_CXX="$TEST_CXX -fsanitize=address"
+  TEST_CC="$TEST_CC -fsanitize=$ASAN"
+  TEST_CXX="$TEST_CXX -fsanitize=$ASAN"
+
+  if [ "$COMP" = "clang" ] && [ "$ASAN" = "undefined" ]
+  then
+    TEST_CC="$TEST_CC -fno-sanitize=function"
+    TEST_CXX="$TEST_CXX -fno-sanitize=function"
+  fi
 fi
+
 
 # compute the g++ etc command
 DEPS="$OPTS --std=gnu++11 -Wall -DCHPL_RT_UNIT_TEST $DEFS $RE2INCLS"

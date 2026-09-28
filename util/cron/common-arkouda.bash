@@ -35,15 +35,15 @@ if [ -d "$ARKOUDA_DEP_DIR" ]; then
   export ARKOUDA_ARROW_PATH=${ARKOUDA_ARROW_PATH:-$ARKOUDA_DEP_DIR/arrow-install}
   export ARKOUDA_ZMQ_PATH=${ARKOUDA_ZMQ_PATH:-$ARKOUDA_DEP_DIR/zeromq-install}
   export ARKOUDA_HDF5_PATH=${ARKOUDA_HDF5_PATH:-$ARKOUDA_DEP_DIR/hdf5-install}
-  export ARKOUDA_ICONV_PATH=${ARKOUDA_ICONV_PATH:-$ARKOUDA_DEP_DIR/iconv-install}
-  export ARKOUDA_IDN2_PATH=${ARKOUDA_IDN2_PATH:-$ARKOUDA_DEP_DIR/idn2-install}
+  export ARKOUDA_ICONV_PATH=${ARKOUDA_ICONV_PATH:-$ARKOUDA_DEP_DIR/libiconv-install}
+  export ARKOUDA_IDN2_PATH=${ARKOUDA_IDN2_PATH:-$ARKOUDA_DEP_DIR/libidn2-install}
   export PATH="$ARKOUDA_HDF5_PATH/bin:$PATH"
 fi
 
 # enable arrow/parquet support
 export ARKOUDA_SERVER_PARQUET_SUPPORT=true
 
-export CHPL_WHICH_RELEASE_FOR_ARKOUDA="2.7.0"
+export CHPL_WHICH_RELEASE_FOR_ARKOUDA="2.9.0"
 
 function partial_checkout_release() {
   currentSha=`git rev-parse HEAD`
@@ -86,6 +86,22 @@ function release_dependencies() {
     : # no extra setup needed yet
   elif [ "$CHPL_WHICH_RELEASE_FOR_ARKOUDA" = "2.7.0" ]; then
     : # no extra setup needed yet
+  elif [ "$CHPL_WHICH_RELEASE_FOR_ARKOUDA" = "2.8.0" ]; then
+    # use LLVM 21, latest supported by 2.8.0
+    if [ -f /hpcdc/project/chapel/chpl-deps/chapcs11/setup_llvm.bash ] ; then
+      source /hpcdc/project/chapel/chpl-deps/chapcs11/setup_llvm.bash 21
+    else
+      echo "CHPL_WHICH_RELEASE_FOR_ARKOUDA is set to $CHPL_WHICH_RELEASE_FOR_ARKOUDA, but no setup_llvm.bash found."
+      if [ "$fallback_to_bundled_llvm" = "true" ]; then
+        echo "Falling back to a bundled LLVM."
+        export CHPL_LLVM=bundled
+        unset CHPL_LLVM_CONFIG
+      else
+        exit 1
+      fi
+    fi
+  elif [ "$CHPL_WHICH_RELEASE_FOR_ARKOUDA" = "2.9.0" ]; then
+    : # no extra setup needed yet
   else
     echo "CHPL_WHICH_RELEASE_FOR_ARKOUDA is set to $CHPL_WHICH_RELEASE_FOR_ARKOUDA, but is not supported by this script."
     exit 1
@@ -94,7 +110,7 @@ function release_dependencies() {
 
 function setup_release() {
   if [ -n "$CHPL_WHICH_RELEASE_FOR_ARKOUDA" ]; then
-    release_dependencies $@
+    release_dependencies "$@"
   else
     echo "CHPL_WHICH_RELEASE_FOR_ARKOUDA not set, cannot run Arkouda release test!"
     exit 1

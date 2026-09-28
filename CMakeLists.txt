@@ -36,12 +36,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # These values will be written to <build_dir>/frontend/include/chpl/config/config.h
 
 set(CHPL_MAJOR_VERSION 2)
-set(CHPL_MINOR_VERSION 8)
+set(CHPL_MINOR_VERSION 11)
 set(CHPL_PATCH_VERSION 0)
 set(CHPL_BUILD_VERSION 0)
 
 set(CHPL_PREV_MAJOR_VERSION 2)
-set(CHPL_PREV_MINOR_VERSION 7)
+set(CHPL_PREV_MINOR_VERSION 10)
 set(CHPL_PREV_PATCH_VERSION 0)
 
 # Flip this to 'true' when we're ready to roll out a release; then back
@@ -134,7 +134,10 @@ set(CHPL_TARGET_BUNDLED_RUNTIME_LINK_ARGS CACHE INTERNAL "Description")
 set(CHPL_TARGET_BUNDLED_PROGRAM_LINK_ARGS CACHE INTERNAL "Description")
 set(CHPL_TARGET_SYSTEM_RUNTIME_LINK_ARGS CACHE INTERNAL "Description")
 set(CHPL_TARGET_SYSTEM_PROGRAM_LINK_ARGS CACHE INTERNAL "Description")
-set(CHPL_TARGET_USE_RUNTIME_LINK_ARGS CACHE INTERNAL "Description")
+set(CHPL_TARGET_USE_STATIC_RUNTIME_LINK_ARGS CACHE INTERNAL "Description")
+set(CHPL_TARGET_USE_SHARED_RUNTIME_LINK_ARGS CACHE INTERNAL "Description")
+set(CHPL_TARGET_STATIC_RUNTIME_LIB_PATH CACHE INTERNAL "Description")
+set(CHPL_TARGET_SHARED_RUNTIME_LIB_PATH CACHE INTERNAL "Description")
 set(CHPL_TARGET_MEM CACHE INTERNAL "Description")
 set(CHPL_TARGET_JEMALLOC CACHE INTERNAL "Description")
 set(CHPL_TARGET_MIMALLOC CACHE INTERNAL "Description")
@@ -349,17 +352,6 @@ if ((CHPL_HOME STREQUAL CMAKE_BINARY_DIR) OR
   message(FATAL_ERROR "It won't work to run cmake from the Chapel source directory. Please run 'rm CMakeCache.txt' and then cd to a different directory before running cmake.")
 endif()
 
-# TODO: This is a hack to get past the safe directory failure from git
-# when running in github CI. It looks like this same command is executed
-# as part of the github workflow, but I'm not sure why it doesn't seem
-# to be taking effect when cmake calls the python script to generate
-# the git-version file.
-if (DEFINED ENV{GITHUB_ACTIONS})
-  if($ENV{GITHUB_ACTIONS} STREQUAL "true")
-    message(STATUS "Running in GitHub Actions - set safe.directory")
-    execute_process(COMMAND git config --global --add safe.directory ${CHPL_HOME})
-  endif()
-endif()
 set(CHPL_CMAKE_PYTHON $ENV{CHPL_MAKE_PYTHON})
 message(STATUS "Using Python: ${CHPL_CMAKE_PYTHON}")
 # message(DEBUG "${CHPL_HOST_BUNDLED_LINK_ARGS} ${CHPL_HOST_SYSTEM_LINK_ARGS}")

@@ -39,6 +39,8 @@ include Makefile.share
 ifneq ($(MAKE_LAUNCHER),1)
 TARGETS = \
 	$(COMMON_OBJS) \
+	$(SHARED_RUNTIME_ONLY_OBJS) \
+	$(STATIC_RUNTIME_ONLY_OBJS) \
 	$(MAIN_OBJS) \
 	$(MAIN_MLI_OBJS) \
 	$(RUNTIME_MALLOC_OBJS) \

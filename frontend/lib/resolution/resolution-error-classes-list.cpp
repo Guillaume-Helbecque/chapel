@@ -294,6 +294,56 @@ void ErrorAssignFieldBeforeInit::write(ErrorWriterBase& wr) const {
   }
 }
 
+void ErrorCallToThrowingFunctionRelaxed::write(ErrorWriterBase& wr) const {
+  auto call = std::get<const uast::FnCall*>(info_);
+  auto sig = std::get<const resolution::UntypedFnSignature*>(info_);
+
+  wr.heading(kind_, type_, locationOnly(call),
+             "call to throwing function '", sig->name(), "' without "
+             "throws, try, or try! (relaxed mode)");
+
+  wr.code(call, { call });
+
+  wr.message("The call must either be enclosed in a 'try' or 'try!' block, "
+             "or the enclosing function must be declared with 'throws'.");
+
+  wr.note(sig->id(), "The function was declared to throw here:");
+  wr.codeForLocation(sig->id());
+}
+
+void ErrorCallToThrowingFunctionStrict::write(ErrorWriterBase& wr) const {
+  auto call = std::get<const uast::FnCall*>(info_);
+  auto sig = std::get<const resolution::UntypedFnSignature*>(info_);
+
+  wr.heading(kind_, type_, locationOnly(call),
+             "call to throwing function '", sig->name(), "'  must be marked "
+             "with try or try! (strict mode)");
+
+  wr.code(call, { call });
+
+  wr.message("The call must be explicitly marked with 'try' or 'try!' to "
+             "indicate where errors may propagate from.");
+
+  wr.note(sig->id(), "The function was declared to throw here:");
+  wr.codeForLocation(sig->id());
+}
+
+void ErrorCallToThrowingFunctionFromNon::write(ErrorWriterBase& wr) const {
+  auto call = std::get<const uast::FnCall*>(info_);
+  auto sig = std::get<const resolution::UntypedFnSignature*>(info_);
+
+  wr.heading(kind_, type_, locationOnly(call),
+             "call to throwing function '", sig->name(), "' from a non-throwing context");
+
+  wr.code(call, { call });
+
+  wr.message("The call must be enclosed in a 'try' or 'try!' block, "
+             "or the enclosing function must be declared with 'throws'.");
+
+  wr.note(sig->id(), "The function was declared to throw here:");
+  wr.codeForLocation(sig->id());
+}
+
 void ErrorConstRefCoercion::write(ErrorWriterBase& wr) const {
   auto ast = std::get<const uast::AstNode*>(info_);
   auto& c = std::get<resolution::MostSpecificCandidate>(info_);
@@ -304,7 +354,12 @@ void ErrorConstRefCoercion::write(ErrorWriterBase& wr) const {
              (c.constRefCoercionActual() + 1) ," for 'const ref' formal '",
              formalName, "'.");
   if (auto call = ast->toCall()) {
-    wr.code(call, { call->actual(c.constRefCoercionActual()) });
+    int idx = c.constRefCoercionActual();
+    if (c.fromExplicitMethodCall()) idx -= 1; // receiver is not in actual list
+    if (idx >= 0) {
+      CHPL_ASSERT(idx < call->numActuals());
+      wr.code(call, { call->actual(idx) });
+    }
   } else {
     wr.code(ast);
   }
@@ -747,8 +802,25 @@ static void printRejectedCandidates(ErrorWriterBase& wr,
       resolution::FormalActualMap fa(fn, ci);
       auto badPass = fa.byFormalIdx(candidate.formalIdx());
       auto formalDecl = badPass.formal();
-      const uast::AstNode* actualExpr = getActual(candidate.actualIdx());
-      bool badSplitInit = ci.actual(candidate.actualIdx()).expectSplitInit();
+      const uast::AstNode* actualExpr = nullptr;
+      const uast::VarLikeDecl* offendingActualDecl = nullptr;
+      bool badSplitInit = false;
+
+      // Can be -1 if the candidate is a method which we tried because
+      // of a freestanding call 'foo()' in a method context.
+      if (candidate.actualIdx() != -1) {
+        actualExpr = getActual(candidate.actualIdx());
+        offendingActualDecl = actualDecls.at(printCount);
+
+        // at this time, 'getActual' may not be total. In particular, it might
+        // return nullptr for the call receiver, since it's relatively
+        // hard to retrieve from the call expression. Only try to report
+        // a split init error if we have an actual expression to point to,
+        // since right now the error message heavily relies on pointing to the actual.
+        if (actualExpr) {
+          badSplitInit = ci.actual(candidate.actualIdx()).expectSplitInit();
+        }
+      }
 
       // formalDecl can be null if the function is in an 'extern' block, in which
       // case there is no Chapel AST corresponding to the formal.
@@ -773,7 +845,6 @@ static void printRejectedCandidates(ErrorWriterBase& wr,
         formalName = "'" + buildTupleDeclName(formalDecl->toTupleDecl()) + "'";
       }
       bool actualPrinted = false;
-      const uast::VarLikeDecl* offendingActual = actualDecls.at(printCount);
       if (candidate.formalReason() == resolution::FAIL_VARARG_TQ_MISMATCH) {
         // a single vararg formal with a type query (like `x: ?t`) was used
         // to pass actuals of different types. Collect all applicable types.
@@ -807,14 +878,16 @@ static void printRejectedCandidates(ErrorWriterBase& wr,
         // and say something nicer.
         wr.message("The instantiated type of ", expectedThing, " ", formalName,
                    " does not allow ", passedThing, "s of type '", badPass.actualType().type(), "'.");
-      } else if (ci.actual(candidate.actualIdx()).expectSplitInit()) {
+      } else if (badSplitInit) {
         auto formalKind = badPass.formalType().kind();
         auto actualName = "'" + actualExpr->toIdentifier()->name().str() + "'";
 
         if (explainedSplitInitsForActuals.insert(candidate.actualIdx()).second) {
-          wr.note(offendingActual->id(), "The actual ", actualName,
-                     " expects to be split-initialized because it is declared with a generic type and no initialization expression here:");
-          wr.codeForDef(offendingActual);
+          if (offendingActualDecl) {
+            wr.note(offendingActualDecl->id(), "The actual ", actualName,
+                      " expects to be split-initialized because it is declared with a generic type and no initialization expression here:");
+            wr.codeForDef(offendingActualDecl);
+          }
           wr.note(actualExpr, "The call to '", ci.name() ,"' occurs before any valid initialization points:");
           wr.code(actualExpr, { actualExpr });
           actualPrinted = true;
@@ -1651,7 +1724,11 @@ void ErrorNoMatchingCandidates::write(ErrorWriterBase& wr) const {
   wr.heading(kind_, type_, node, "unable to resolve call to '", ci.name(), "': no matching candidates.");
   wr.code(node);
 
-  printRejectedCandidates(wr, node->id(), ci, rejected, "an", "actual", "a", "formal", [call](int idx) -> const uast::AstNode* {
+  printRejectedCandidates(wr, node->id(), ci, rejected, "an", "actual", "a", "formal", [call, &ci](int idx) -> const uast::AstNode* {
+    // in x.foo(a, b, c), the CI actuals are [x, a, b, c] but the call expression
+    // only has the actuals [a, b, c]. Adjust the index to account for this.
+    if (ci.isMethodCall()) idx -= 1;
+
     if (call && 0 <= idx && idx < call->numActuals()) {
       return call->actual(idx);
     }
@@ -1986,6 +2063,39 @@ static bool firstIdFromDecls(
     }
   }
   return false;
+}
+
+void ErrorRaceyOutInoutInPromotion::write(ErrorWriterBase& wr) const {
+  auto ast = std::get<const uast::AstNode*>(info_);
+  auto& c = std::get<resolution::MostSpecificCandidate>(info_);
+
+  auto formalName = c.fn()->formalName(c.raceyScalarOutFormal());
+  const char* intent = "out";
+  auto fmlDecl = c.fn()->untyped()->formalDecl(c.raceyScalarOutFormal());
+  if (fmlDecl) {
+    if (auto vld = fmlDecl->toVarLikeDecl()) {
+      intent = vld->storageKind() == uast::Qualifier::OUT ? "out" : "inout";
+    }
+  }
+
+  wr.heading(kind_, type_, ast, "cannot promote function '",
+             c.fn()->untyped()->name(), "' while keeping the formal '", intent, " ", formalName, "' scalar");
+  if (auto call = ast->toCall()) {
+    int idx = c.raceyScalarOutActual();
+    if (c.fromExplicitMethodCall()) idx -= 1; // receiver is not in actual list
+    if (idx >= 0) {
+      CHPL_ASSERT(idx < call->numActuals());
+      wr.code(call, { call->actual(idx) });
+    }
+  } else {
+    wr.code(ast);
+  }
+  wr.message("'", intent, "' actuals will be written to by each iteration of the promoted function, which can lead to races.");
+
+  if (fmlDecl) {
+    wr.message("The formal was declared '", intent, "' here:");
+    wr.code(fmlDecl, { fmlDecl });
+  }
 }
 
 void ErrorRecursion::write(ErrorWriterBase& wr) const {
@@ -2348,15 +2458,67 @@ void ErrorTertiaryUseImportUnstable::write(ErrorWriterBase& wr) const {
   wr.message("The type '", name, "' is not defined in '", searchedScope->name(), "'.");
 }
 
-void ErrorTupleDeclMismatchedElems::write(ErrorWriterBase& wr) const {
-  auto decl = std::get<const uast::TupleDecl*>(info_);
-  auto type = std::get<const types::TupleType*>(info_);
-  wr.heading(kind_, type_, decl,
-            "tuple size mismatch in split tuple declaration.");
-  wr.code(decl);
-  wr.message("The left-hand side of the declaration expects a ",
-             decl->numDecls(), "-tuple, but the right-hand side is a ",
-             type->numElements(), "-tuple, '", type, "'.");
+void ErrorThrowInNonThrowingFunction::write(ErrorWriterBase& wr) const {
+  auto throwNode = std::get<const uast::Throw*>(info_);
+  auto fn = std::get<const uast::Function*>(info_);
+
+  wr.heading(kind_, type_, throwNode,
+             "cannot throw in a non-throwing function");
+  wr.code(throwNode, { throwNode });
+  wr.message("Either put the throw inside a try block, or add 'throws' to the function declaration.");
+  if (fn) {
+    wr.note(fn, "the function is declared here:");
+    wr.codeForLocation(fn);
+  }
+}
+
+void ErrorThrowUnhandled::write(ErrorWriterBase& wr) const {
+  auto call = std::get<const uast::FnCall*>(info_);
+  auto sig = std::get<const resolution::UntypedFnSignature*>(info_);
+
+  wr.heading(kind_, type_, call,
+             "call to throwing function '", sig->name(), "' is in a 'try' "
+             "but not handled");
+  wr.code(call, { call });
+}
+
+void ErrorTryNoCatchAll::write(ErrorWriterBase& wr) const {
+  auto tryNode = std::get<const uast::Try*>(info_);
+
+  wr.heading(kind_, type_, tryNode,
+             "try without a catchall in a non-throwing function");
+  wr.code(tryNode, { tryNode });
+
+  wr.message("This allows for unhandled exceptions to propagate out of the "
+             "function, which is not allowed in a non-throwing function. "
+             "Either add a catchall to handle those errors or make the "
+             "function throwing.");
+}
+
+void ErrorTupleDeclAssignMismatchedElems::write(ErrorWriterBase& wr) const {
+  auto ast = std::get<const uast::AstNode*>(info_);
+  auto rhsType = std::get<const types::TupleType*>(info_);
+
+  std::string declOrAssign = "";
+  size_t lhsSize = 0;
+  auto td = ast->toTupleDecl();
+  auto op = ast->toOpCall();
+  if (td) {
+    declOrAssign = "declaration";
+    lhsSize = td->numDecls();
+  } else if (op && op->op() == USTR("=") && op->lhs()->isTuple()) {
+    declOrAssign = "assign";
+    lhsSize = op->lhs()->toTuple()->numActuals();
+  } else {
+    CHPL_ASSERT(false && "invalid input");
+  }
+
+  wr.heading(kind_, type_, ast, "tuple size mismatch in split tuple ",
+             declOrAssign, ".");
+  wr.code(ast);
+  wr.message("The left-hand side of the ", declOrAssign, " expects a ", lhsSize,
+             "-tuple, but the right-hand side is a ", rhsType->numElements(),
+             "-tuple, '", rhsType, "'.");
 }
 
 void ErrorTupleDeclNotTuple::write(ErrorWriterBase& wr) const {

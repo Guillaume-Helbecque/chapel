@@ -1,14 +1,14 @@
-mason clean
+echo_and_run mason clean
 
 # not built
-mason run --example example.chpl || echo "exited with $?"
+echo_and_run mason run --example example.chpl || echo "exited with $?"
 
 # no --build
-mason run --example example.chpl --force || echo "exited with $?"
+echo_and_run mason run --example example.chpl --force || echo "exited with $?"
 
 # no --build
-mason run --example example.chpl --no-update || echo "exited with $?"
+echo_and_run mason run --example example.chpl --no-update || echo "exited with $?"
 
 # unknown
-mason build --example Unknown || echo "exited with $?"
-mason run --example Unknown || echo "exited with $?"
+echo_and_run mason build --example Unknown || echo "exited with $?"
+echo_and_run mason run --example Unknown || echo "exited with $?"

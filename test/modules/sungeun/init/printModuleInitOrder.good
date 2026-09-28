@@ -7,13 +7,15 @@ Initializing Modules:
        Atomics
         MemConsistency
         currentTask
-    ChapelThreads
     ChapelTuple
      DSIUtil
     ChapelRange
      ChapelDebugPrint
       ChapelIOStringifyHelper
     ChapelTaskDataHelp
+    ChapelRuntimeInterface
+     ChapelProgramRegistration
+      ChapelSetProgramInfoDataEntries
     LocaleModel
      LocaleModelHelpFlat
       LocaleModelHelpSetup
@@ -61,9 +63,9 @@ Initializing Modules:
     LocalesArray
     ChapelTaskTable
     MemTracking
-    ExportWrappers
     ChapelStaticVars
     ChapelDynamicLoading
+    ChapelProgramEntrypoints
     AlignedTSupport
    printModuleInitOrder
     moduleInitTest

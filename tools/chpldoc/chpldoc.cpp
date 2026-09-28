@@ -240,7 +240,9 @@ static void checkProjectVersion(const ArgumentDescription* desc, const char* arg
   {0}
 
 static ArgumentState sArgState = {
+  NULL,
   0,
+  NULL,
   0,
   "program",
   "path",
@@ -369,6 +371,9 @@ static void checkKnownAttributes(const AttributeGroup* attrs) {
       UniqueString::get(gContext, "chpldoc.nodoc"),
       UniqueString::get(gContext, "chpldoc.attributeSignature"),
       UniqueString::get(gContext, "chpldoc.hideImplType"),
+      UniqueString::get(gContext, "chpldoc.noWhereClause"),
+      UniqueString::get(gContext, "chpldoc.noAutoInclude"),
+      UniqueString::get(gContext, "chpldoc.noUsage"),
   };
   for (auto attr : attrs->children()) {
     auto name = attr->toAttribute()->name();
@@ -450,11 +455,19 @@ static bool isNoDoc(const Decl* e) {
 }
 
 static bool isNoWhereDoc(const Function* f) {
-  return f->hasPragma(gContext, pragmatags::PRAGMA_NO_WHERE_DOC);
+  return f->hasAttribute(gContext, UniqueString::get(gContext, "chpldoc.noWhereClause"));
 }
 
 static bool isHideImplType(const Decl* e) {
   return e->hasAttribute(gContext, UniqueString::get(gContext, "chpldoc.hideImplType"));
+}
+
+static bool isNoAutoInclude(const Module* m) {
+  return m->hasAttribute(gContext, UniqueString::get(gContext, "chpldoc.noAutoInclude"));
+}
+
+static bool isNoUsage(const Module* m) {
+  return m->hasAttribute(gContext, UniqueString::get(gContext, "chpldoc.noUsage"));
 }
 
 static std::vector<std::string> splitLines(const std::string& s) {
@@ -485,9 +498,7 @@ static bool ends_with(llvm::StringRef a, llvm::StringRef b) {
 #endif
 }
 
-static std::string filenameFromModuleName(std::string name,
-                                          std::string docsWorkDir) {
-  // Borrowed from chpldoc
+static std::string filenameFromModuleName(std::string name) {
   std::string filename = name;
   size_t location = filename.rfind("/");
   if (location != std::string::npos) {
@@ -505,7 +516,6 @@ static std::string filenameFromModuleName(std::string name,
   } else {
     filename = "";
   }
-  filename = docsWorkDir + "/" + filename;
 
   return filename;
 }
@@ -513,7 +523,11 @@ static std::string filenameFromModuleName(std::string name,
 static bool hasSubmodule(const Module* mod) {
   for (const AstNode* child : mod->stmts()) {
     if (auto mod = child->toModule())
-      if (mod->visibility() != chpl::uast::Decl::PRIVATE && !isNoDoc(mod)) {
+      if (mod->visibility() != chpl::uast::Decl::PRIVATE &&
+          !isNoDoc(mod) && !isNoAutoInclude(mod)) {
+        // if isNoAutoInclude, then we won't include this module in the docs,
+        // but we should generated docs for it
+        // however, this function is only used for includes, not generation
         return true;
     }
   }
@@ -1516,6 +1530,7 @@ struct RstResultBuilder {
     node->traverse(ppv);
     if (!fDocsTextOnly) os_ << "\n";
 
+    showEdition(node, indentComment);
     showDeprecationMessage(node, indentComment);
     // TODO: how do deprecation and unstable messages interplay?
     showUnstableWarning(node, indentComment);
@@ -1590,6 +1605,55 @@ struct RstResultBuilder {
           }
           os_ << "\n";
         }
+      }
+    }
+  }
+
+  void showEdition(const Decl* node, bool indentComment=true) {
+    if (auto attrs = node->attributeGroup()) {
+      if (attrs->hasEdition()) {
+        // write the pertinent edition information
+        os_ << "\n";
+
+        int commentShift = 0;
+        if (indentComment) {
+          indentStream(os_, indentDepth_ * indentPerDepth);
+          commentShift = 1;
+        }
+        os_ << ".. note::\n\n";
+        indentStream(os_, (indentDepth_ + commentShift) * indentPerDepth);
+        auto firstEdition = attrs->firstEdition();
+        auto lastEdition = attrs->lastEdition();
+        if (firstEdition.isEmpty() && !lastEdition.isEmpty()) {
+          os_ << getNodeName((AstNode*) node)
+              << " was removed after the " << lastEdition.str() << " edition."
+              << " It is not available in editions after the "
+              << lastEdition.str() << " edition.";
+        } else if (!firstEdition.isEmpty() && lastEdition.isEmpty()) {
+          // special message for new preview items, since "preview"
+          // isn't a real edition
+          if (firstEdition == "preview") {
+            os_ << getNodeName((AstNode*) node)
+                << " is available in the preview edition and is expected "
+                << "to be available in the next new edition.";
+          } else {
+            os_ << getNodeName((AstNode*) node)
+                << " was added in the " << firstEdition.str()
+                << " edition and is also available in all editions after the "
+                << firstEdition.str() << " edition.";
+          }
+        } else if (!firstEdition.isEmpty() && !lastEdition.isEmpty()) {
+          os_ << getNodeName((AstNode*) node)
+              << " was added in the " << firstEdition.str()
+              << " edition and was removed after the "
+              << lastEdition.str()
+              << " edition.";
+        } else {
+          // this case should be impossible because hasEdition() should only be
+          // true if at least one of first or last edition is non-empty
+          assert(false);
+        }
+        os_ << "\n";
       }
     }
   }
@@ -1692,7 +1756,10 @@ struct RstResultBuilder {
     for (auto stmt : m->stmts()) {
       if (auto inc = stmt->toInclude()) {
         auto incMod = getIncludedSubmodule(context_, inc->id());
-        if (!isNoDoc(incMod)) {
+        if (!isNoDoc(incMod) && !isNoAutoInclude(incMod)) {
+          // if isNoAutoInclude, then we won't include this module in the docs,
+          // but we should generated docs for it
+          // however, this boolean is only used for includes, not generation
           hasIncludes = true;
           break;
         }
@@ -1767,13 +1834,17 @@ struct RstResultBuilder {
         os_ << "An explicit ``use`` statement is not necessary.";
         os_ << std::endl;
       } else {
-        os_ << templateReplace(templateUsage, "MODULE", moduleName) << "\n";
+        if (!isNoUsage(m)) {
+          os_ << templateReplace(templateUsage, "MODULE", moduleName) << "\n";
+        }
       }
 
     } else {
-      os_ << m->name().c_str();
-      os_ << templateReplace(textOnlyTemplateUsage, "MODULE", moduleName) << "\n";
-      lastComment = previousComment(context_, m->id());
+      if (!isNoUsage(m)) {
+        os_ << m->name().c_str();
+        os_ << templateReplace(textOnlyTemplateUsage, "MODULE", moduleName) << "\n";
+        lastComment = previousComment(context_, m->id());
+      }
     }
 
     if (hasSubmodule(m) || hasIncludes) {
@@ -1797,7 +1868,8 @@ struct RstResultBuilder {
         os_ << moduleName << "/ directory" << std::endl;
       }
     }
-    if (fDocsTextOnly) indentDepth_ --;
+    if (fDocsTextOnly) indentDepth_--;
+    showEdition(m, false);
     showDeprecationMessage(m, false);
     showUnstableWarning(m, false);
     showComment(m, fDocsTextOnly);
@@ -2257,16 +2329,24 @@ static
 void generateSphinxOutput(std::string sphinxDir, std::string outputDir,
                           std::string projectName, std::string projectDescription,
                           std::string projectVersion, std::string projectCopyright,
-                          std::string author,
+                          std::string author, const std::vector<std::string>& pathsToNotInclude,
                           bool printSystemCommands) {
   std::string sphinxBuild = "python3 " + getChplDepsApp() + " sphinx-build";
+
+  std::string excludePaths;
+  std::string sep;
+  for (const auto& path : pathsToNotInclude) {
+    excludePaths += sep + path;
+    sep = ",";
+  }
 
   std::string envVars =
     "export CHPLDOC_AUTHOR='" + author + "' && " +
     "export CHPLDOC_PROJECT_NAME='" + projectName + "' && " +
     "export CHPLDOC_PROJECT_DESCRIPTION='" + projectDescription +"' && " +
     "export CHPLDOC_PROJECT_VERSION='" + projectVersion + "' && " +
-    "export CHPLDOC_PROJECT_COPYRIGHT='" + projectCopyright + "'";
+    "export CHPLDOC_PROJECT_COPYRIGHT='" + projectCopyright + "' && " +
+    "export CHPLDOC_EXCLUDE_PATTERNS='" + excludePaths + "'";
 
 
   // Run:
@@ -2413,13 +2493,13 @@ int main(int argc, char** argv) {
   }
 
   // Make the intermediate dir and output dir.
-  if (auto err = makeDir(docsSphinxDir)) {
+  if (auto err = makeDir(docsSphinxDir, true)) {
     std::cerr << "error: Failed to create directory: "
               << docsSphinxDir << " due to: "
               << err.message() << std::endl;
     return 1;
   }
-  if (auto err = makeDir(docsOutputDir)) {
+  if (auto err = makeDir(docsOutputDir, true)) {
     std::cerr << "error: Failed to create directory: "
               << docsOutputDir << " due to: "
               << err.message() << std::endl;
@@ -2544,6 +2624,7 @@ int main(int argc, char** argv) {
   // exit if there were fatal errors in the processing done so far
   erroHandler->printAndExitIfError(gContext);
 
+  std::vector<std::string> pathsToNotInclude;
   for (auto id : gather.modules) {
     if (auto& r = rstDoc(gContext, id, 1)) {
         // given a module ID we can get the path to the file that we parsed
@@ -2562,11 +2643,23 @@ int main(int argc, char** argv) {
             }
           }
         }
-        std::string docsWorkingDir_ = filenameFromModuleName(filePath.c_str(), outputDir_);
-        std::string outdir = docsWorkingDir_;
+        auto outFileName = filenameFromModuleName(filePath.c_str());
+        std::string outdir = outputDir_ + "/" + outFileName;
         // TODO: This is an ugly hack to handle included module paths
         if (parentSymbol.isEmpty()) {
           outdir += "/" + parentPath;
+        }
+
+        if (!id.isEmpty()) {
+          const AstNode* node = idToAst(gContext, id);
+          if (auto m = node->toModule()) {
+            if (isNoAutoInclude(m)) {
+              if (outFileName.empty())
+                pathsToNotInclude.push_back(moduleName);
+              else
+                pathsToNotInclude.push_back(outFileName + "/" + moduleName);
+            }
+          }
         }
 
         // need to check for a parent module in the path and add it to the directory structure if it exists
@@ -2581,7 +2674,7 @@ int main(int argc, char** argv) {
     generateSphinxOutput(docsSphinxDir, docsOutputDir,
                          fDocsProjectName, fDocsProjectDescription,
                          fDocsProjectVersion, fDocsProjectCopyrightYear,
-                         fDocsAuthor,
+                         fDocsAuthor, pathsToNotInclude,
                          printSystemCommands);
   }
 

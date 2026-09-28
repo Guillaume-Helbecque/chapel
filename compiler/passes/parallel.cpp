@@ -1147,7 +1147,7 @@ makeHeapAllocations() {
           call->getStmtExpr()->insertBefore(new CallExpr(PRIM_MOVE, tmp, new CallExpr(PRIM_GET_MEMBER_VALUE, use->symbol(), heapType->getField(1))));
           use->replace(new SymExpr(tmp));
           if (call->isPrimitive(PRIM_ZERO_VARIABLE)) {
-            // aftering zeroing the value, we need to set it back
+            // after zeroing the value, we need to set it back
             // otherwise its a dead store
             call->getStmtExpr()->insertAfter(
               new CallExpr(PRIM_SET_MEMBER, use->symbol(), heapType->getField(1), tmp));
@@ -1360,7 +1360,7 @@ static void insertEndCounts()
 // if ( chpl_doDirectExecuteOn( targetLocale ) )
 //     call un-wrapped task function
 // else
-//     proceed as with chpl_executeOn/chpl_executeOnFast
+//     proceed as with chpl_localeModelExecuteOn/chpl_localeModelExecuteOnFast
 //     fid call to wrapper function on a remote local
 //     (possibly just a different sublocale)
 //

@@ -40,6 +40,7 @@ struct DisambiguationContext;
 struct DisambiguationCandidate {
   const TypedFnSignature* fn = nullptr;
   QualifiedType forwardingTo; // actual passed to receiver when forwarding
+  const CallInfo& call;
   FormalActualMap formalActualMap;
   int idx = 0;
   PromotedFormalMap promotedFormals;
@@ -54,7 +55,8 @@ struct DisambiguationCandidate {
                           QualifiedType forwardingTo,
                           const CallInfo& call,
                           int idx)
-    : fn(fn), forwardingTo(forwardingTo), formalActualMap(fn, call), idx(idx),
+    : fn(fn), forwardingTo(forwardingTo), call(call),
+      formalActualMap(fn, call), idx(idx),
       promotedFormals(), nImplicitConversionsComputed(false),
       anyNegParamToUnsigned(false), nImplicitConversions(0),
       nParamNarrowingImplicitConversions(0), visibilityDistance(-1)
@@ -65,7 +67,7 @@ struct DisambiguationCandidate {
   void computeConversionInfo(const DisambiguationContext& dctx);
 
   MostSpecificCandidate toMostSpecificCandidate(ResolutionContext* rc, const Scope* callInScope, const PoiScope* callInPoiScope) const {
-    return MostSpecificCandidate::fromTypedFnSignature(rc, fn, formalActualMap, callInScope, callInPoiScope, promotedFormals);
+    return MostSpecificCandidate::fromTypedFnSignature(rc, fn, call, formalActualMap, callInScope, callInPoiScope, promotedFormals);
   }
 };
 
@@ -1782,13 +1784,13 @@ static bool isFormalInstantiatedAny(const DisambiguationCandidate& candidate,
 static bool isFormalPartiallyGeneric(const DisambiguationCandidate& candidate,
                                      const FormalActual* fa) {
 
-  // Production determines "partially generic" when it desugars type epxressions.
+  // Production determines "partially generic" when it desugars type expressions.
   // Specifically, it desugars things like 'x : foo(?t, s)' to ' x : foo' and a
   // 'where' clause in which 'x.type.secondField' must be a subtype of 's'.
   // For the purposes of _only_ determining whether a formal is partially generic,
   // we don't need to match that logic in full; any one 'where' clause is
   // enough for a formal to be considered partially generic. So, the below
-  // list is a simplifcation of the logic. You may re-derive it by tracing
+  // list is a simplification of the logic. You may re-derive it by tracing
   // 'addToWhereClause' in normalize.cpp.
   //
   // * a variadic argument has a size specifier
@@ -1797,7 +1799,7 @@ static bool isFormalPartiallyGeneric(const DisambiguationCandidate& candidate,
   //   * any tuple expression (because it constrains .size)
   //   * any N*t expression (because it constrains .size)
   //   * 'shared' or 'owned'. I think we should also use 'borrowed' and 'unmanaged'.
-  // * gated on 'formal contains genric expression', in the actuals of a call:
+  // * gated on 'formal contains generic expression', in the actuals of a call:
   //   * any actual that isn't '?' or '?t'
   //
   // Here, make an assumption that since this function is called,
@@ -1811,7 +1813,7 @@ static bool isFormalPartiallyGeneric(const DisambiguationCandidate& candidate,
   } else if (auto nf = faDecl->toVarLikeDecl()) {
     faTypeExpr = nf->typeExpression();
   } else if (faDecl->isTupleDecl()) {
-    // implicitly constrained, since the number of decls constrants its size
+    // implicitly constrained, since the number of decls constrains its size
     return true;
   }
 
@@ -1820,7 +1822,7 @@ static bool isFormalPartiallyGeneric(const DisambiguationCandidate& candidate,
   if (faTypeExpr->isTuple()) {
     return true;
   } else if (auto op = faTypeExpr->toOpCall()) {
-    if (op->numActuals() == 2 && op->op() == USTR("*")) return true;
+    if (op->isBinaryOp() && op->op() == USTR("*")) return true;
   } else if (auto fnCall = faTypeExpr->toFnCall()) {
     if (parsing::isCallToClassManager(fnCall) &&
         fnCall->numActuals() >= 1) return true;

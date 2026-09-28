@@ -8,6 +8,8 @@
 # Expects the VM name to be given as an environment variable. The special name
 # "all" can be used to run the command on all VMs.
 
+set -exuo pipefail
+
 if [ -z "$VM_NAME" ]
 then
   echo "Please set the VM_NAME environment variable to the name of the VM you want to run this on."
@@ -91,7 +93,7 @@ do
     vagrant halt 2>&1 | tee -a "$DIR"/log
     cd "$DIR"
 
-    ((i++))
+    ((++i))
   fi
 done
 
@@ -102,9 +104,18 @@ for name in current/*
 do
   if [ -f $name/Vagrantfile ]
   then
+    # skip if this isn't a desired VM to run on
+    if [ "$VM_NAME" != "all" ]
+    then
+      if [ "$name" != "current/$VM_NAME" ]
+      then
+        continue
+      fi
+    fi
+
     echo "${NAME[$i]}:${RESULT[$i]}"
 
-    ((i++))
+    ((++i))
   fi
 done
 

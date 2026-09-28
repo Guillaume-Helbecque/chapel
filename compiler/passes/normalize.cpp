@@ -29,6 +29,7 @@
 #include "arrayViewElision.h"
 #include "astutil.h"
 #include "build.h"
+#include "CatchStmt.h"
 #include "DecoratedClassType.h"
 #include "driver.h"
 #include "errorHandling.h"
@@ -70,6 +71,7 @@ static bool        isArrayFormal(ArgSymbol* arg);
 static Expr*       arrayTypeEltTypeExprOrNull(Expr* expr);
 
 static bool        returnsArray(FnSymbol* fn);
+static bool        returnsArrayOrTupleOfArrays(FnSymbol* fn);
 static void        makeExportWrapper(FnSymbol* fn);
 
 static void        fixupArrayFormals(FnSymbol* fn);
@@ -620,17 +622,40 @@ static void moveAndCheckInterfaceConstraints() {
 
     FnSymbol* fn = toFnSymbol(icon->parentSymbol);
     if (fn != nullptr) {
-      if (BlockStmt* block = toBlockStmt(icon->parentExpr)) {
-        if (fn->where == block) {
+
+      // If this 'implements' statement appears within a 'where'
+      // clause, it should take one of the following forms at this
+      // point:
+      //
+      // - BlockStmt
+      //   - CallExpr("chpl_validateWhere")
+      //     - ImplementsStmt()
+      //     - CallExpr("&&")
+      //       - ImplementsStmt() | expr
+      //       - expr | ImplementsStmt()
+      //
+      // The following conditional strives to pluck 'implements'
+      // statements out of this pattern, leaving anything else
+      // intact, or removing it if nothing's left.
+      //
+      if (CallExpr* call = toCallExpr(icon->parentExpr)) {
+        // unwrap the compiler-inserted where-clause validation if it's there
+        if (call->isNamed("chpl_validateWhere")) {
           icon->remove();
           fn->addInterfaceConstraint(icon);
-          if (block->body.empty())
-            block->remove();
+          if (BlockStmt* block = toBlockStmt(call->parentExpr)) {
+            call->remove();
+            if (block->body.empty()) {
+              block->remove();
+            } else {
+              INT_FATAL("Unexpected non-empty block in where clause");
+            }
+          } else {
+            INT_FATAL("Unexpected parent expression in where clause");
+          }
           continue;
-        }
-      } else if (CallExpr* call = toCallExpr(icon->parentExpr)) {
-        if (isInWhereBlock(fn, call)) {
-          if (! call->isNamed("&&")) {
+        } else if (isInWhereBlock(fn, call)) {
+          if (!call->isNamed("&&")) {
             USR_FATAL_CONT(icon, "combining an 'implements' constraint"
                   " with others is currently supported only using '&&'");
             continue;
@@ -645,6 +670,8 @@ static void moveAndCheckInterfaceConstraints() {
         if (icon->list == &(ifcInfo->interfaceConstraints))
           continue; // this constraint is already in the right spot, due to
                     // handleReceiverFormals() -> desugarInterfaceAsType()
+      } else {
+        INT_FATAL("Unexpected case in moveAndCheckInterfaceConstraints()");
       }
     }
 
@@ -2176,26 +2203,42 @@ static bool isVoidReturn(CallExpr* call) {
   return retval;
 }
 
-static bool hasGenericArrayReturn(FnSymbol* fn) {
-  if (returnsArray(fn)) {
-    BlockStmt* typeExpr = fn->retExprType;
+static bool isGenericArray(CallExpr* call) {
+  if (!call->isNamed("chpl__buildArrayRuntimeType")) return false;
 
-    // returnsArray ensured this was a call to "chpl__buildArrayRuntimeType"
-    CallExpr* call = toCallExpr(typeExpr->body.tail);
-    int nArgs = call->numActuals();
-    Expr* domExpr = call->get(1);
-    Expr* eltExpr = nArgs == 2 ? call->get(2) : NULL;
-    bool noDom = (isSymExpr(domExpr) && toSymExpr(domExpr)->symbol() == gNil);
+  int nArgs = call->numActuals();
+  Expr* domExpr = call->get(1);
+  Expr* eltExpr = nArgs == 2 ? call->get(2) : nullptr;
+  bool noDom = (isSymExpr(domExpr) && toSymExpr(domExpr)->symbol() == gNil);
 
-    if (noDom || eltExpr == NULL) {
-      // Either the domain is not provided explicitly as part of the return
-      // type, or the element type is not provided, or both
-
-      return true;
+  // Either the domain is not provided explicitly as part of the return
+  // type, or the element type is not provided, or both
+  return noDom || eltExpr == nullptr;
+}
+static bool containsGenericArray(CallExpr* call) {
+  if (call->isNamed("_build_tuple")) {
+    for_actuals(arg, call) {
+      if (CallExpr* argCall = toCallExpr(arg)) {
+        if (containsGenericArray(argCall))
+          return true;
+      }
     }
+    return false;
+  } else {
+    return isGenericArray(call);
   }
+}
 
-  return false;
+static bool hasGenericArrayReturn(FnSymbol* fn) {
+  if (!returnsArrayOrTupleOfArrays(fn)) return false;
+  BlockStmt* typeExpr = fn->retExprType;
+
+  // returnsArrayOrTupleOfArrays ensured this was a call to
+  // "chpl__buildArrayRuntimeType" or a call to "_build_tuple" with
+  // "chpl__buildArrayRuntimeType" as an argument
+  CallExpr* call = toCallExpr(typeExpr->body.tail);
+  return containsGenericArray(call);
+
 }
 
 //
@@ -2239,27 +2282,109 @@ static void insertElementTypeCheck(Expr* declaredRet, Expr* actualRet,
   retVar->insertBefore(checkEltType);
 }
 
+// Validates the actual return type is an array of some kind
+static void insertGenericArrayCheck(Expr* actualRet, CallExpr* retVar) {
+  CallExpr* checkGenericArray = new CallExpr("chpl__checkGenericArrayReturn",
+                                             actualRet->copy());
+  retVar->insertBefore(checkGenericArray);
+}
+
+static void modifyPartiallyGenericArrayReturnSimple(FnSymbol* fn,
+                                                    VarSymbol* retval,
+                                                    CallExpr* ret,
+                                                    Expr* retExpr);
+static Expr* modifyPartiallyGenericArrayReturnRecurse(FnSymbol* fn,
+                                                      CallExpr* ret,
+                                                      Expr* typeExpr,
+                                                      Expr* retExpr);
 static void modifyPartiallyGenericArrayReturn(FnSymbol* fn,
                                               VarSymbol* retval,
                                               CallExpr* ret,
                                               Expr* retExpr) {
   BlockStmt* typeExpr = fn->retExprType;
+  if (toCallExpr(typeExpr->body.tail)->isNamed("chpl__buildArrayRuntimeType")) {
+    modifyPartiallyGenericArrayReturnSimple(fn, retval, ret, retExpr);
+    return;
+  }
+  auto newRetExpr =
+    modifyPartiallyGenericArrayReturnRecurse(fn, ret, typeExpr->body.tail, retExpr);
+  ret->insertBefore(new CallExpr(PRIM_MOVE, retval, newRetExpr));
+}
+static Expr* modifyPartiallyGenericArrayReturnRecurse(FnSymbol* fn,
+                                                      CallExpr* ret,
+                                                      Expr* typeExpr,
+                                                      Expr* retExpr) {
+  auto typeCall = toCallExpr(typeExpr);
+  auto retCall = toCallExpr(retExpr);
+  if (typeCall && typeCall->isNamed("_build_tuple")) {
+    if (!(retCall && retCall->isNamed("_build_tuple"))) {
+      USR_WARN(fn, "return type is a tuple, but return value is not a literal tuple - no return type checking will be performed");
+      USR_PRINT(fn, "see issue #29373 for more information on this");
+      return retExpr;
+    }
+    int nTypeArgs = typeCall->numActuals();
+    int nRetArgs = retCall->numActuals();
+    if (nTypeArgs != nRetArgs) {
+      USR_FATAL(fn, "return type is a tuple of size %d, but return value is a tuple of size %d", nTypeArgs, nRetArgs);
+    }
+    for (int i = 1; i <= nTypeArgs; i++) {
+      Expr* typeArg = typeCall->get(i);
+      Expr* retArg = retCall->get(i);
+      retCall->get(i)->replace(new SymExpr(gNil)); // dummy replacement
+      auto newRetArg =
+        modifyPartiallyGenericArrayReturnRecurse(fn, ret, typeArg, retArg);
+      retCall->get(i)->replace(newRetArg);
+    }
+  } else if (typeCall && isGenericArray(typeCall)) {
+    int nArgs = typeCall->numActuals();
+    Expr* domExpr = typeCall->get(1);
+    Expr* retEltExpr = nArgs == 2 ? typeCall->get(2) : nullptr;
+    bool noDom = (isSymExpr(domExpr) && toSymExpr(domExpr)->symbol() == gNil);
+    if (!noDom || retEltExpr != nullptr) {
+      prepareRetExpr(retExpr, ret);
+    }
+    if (!noDom) {
+      // Add checks against the declared domain
+      insertDomainCheck(retExpr, ret, domExpr);
+    }
+    if (retEltExpr != nullptr) {
+      insertElementTypeCheck(retEltExpr, retExpr, ret);
+    }
+    if (noDom && retEltExpr == nullptr) {
+    insertGenericArrayCheck(retExpr, ret);
+  }
+  }
+  return retExpr;
+}
+
+
+
+
+static void modifyPartiallyGenericArrayReturnSimple(FnSymbol* fn,
+                                                    VarSymbol* retval,
+                                                    CallExpr* ret,
+                                                    Expr* retExpr) {
+  BlockStmt* typeExpr = fn->retExprType;
 
   CallExpr* call = toCallExpr(typeExpr->body.tail);
   int nArgs = call->numActuals();
   Expr* domExpr = call->get(1);
-  Expr* retEltExpr = nArgs == 2 ? call->get(2) : NULL;
+  Expr* retEltExpr = nArgs == 2 ? call->get(2) : nullptr;
   bool noDom = (isSymExpr(domExpr) && toSymExpr(domExpr)->symbol() == gNil);
 
-  if (!noDom) {
+  if (!noDom || retEltExpr != nullptr) {
     prepareRetExpr(retExpr, ret);
+  }
+  if (!noDom) {
     // Add checks against the declared domain
     insertDomainCheck(retExpr, ret, domExpr);
   }
-
-  if (retEltExpr != NULL) {
-    prepareRetExpr(retExpr, ret);
+  if (retEltExpr != nullptr) {
     insertElementTypeCheck(retEltExpr, retExpr, ret);
+  }
+
+  if (noDom && retEltExpr == nullptr) {
+    insertGenericArrayCheck(retExpr, ret);
   }
 
   // TODO: Do something about coercion
@@ -2838,6 +2963,13 @@ static Expr* getCallTempInsertPoint(Expr* expr) {
         if (def->sym == sym)
           return def;
     }
+  }
+  if (auto ctch = toCatchStmt(stmt)) {
+    // Catch statements are not expected to have anything other than
+    // catch statements as siblings, so we can put the call temp before
+    // parent try.
+    if (isTryStmt(ctch->parentExpr))
+      stmt = ctch->parentExpr;
   }
   return stmt;
 }
@@ -3882,6 +4014,21 @@ static bool returnsArray(FnSymbol* fn) {
   // SIMPLIFYING ASSUMPTION:
   // If we don't have a declared return type, assume we don't return an array
   return false;
+}
+static bool isTupleOrArray(CallExpr* call) {
+  if (!call) return false;
+  if (call->isNamed("chpl__buildArrayRuntimeType"))
+    return true;
+  else if (call->isNamed("_build_tuple"))
+    for_actuals(actual, call) {
+      if (isTupleOrArray(toCallExpr(actual)))
+        return true;
+    }
+  return false;
+}
+static bool returnsArrayOrTupleOfArrays(FnSymbol* fn) {
+  return fn->retExprType != NULL &&
+         isTupleOrArray(toCallExpr(fn->retExprType->body.tail));
 }
 
 

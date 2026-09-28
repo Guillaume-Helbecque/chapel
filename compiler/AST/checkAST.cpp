@@ -230,6 +230,7 @@ void checkPrimitives()
      case PRIM_CHECK_NIL:
      case PRIM_GET_REAL:            // get complex real component
      case PRIM_GET_IMAG:            // get complex imag component
+     case PRIM_BUILD_COMPLEX:     // build complex from real and imag
      case PRIM_QUERY:               // query expression primitive
      case PRIM_LOCAL_CHECK:         // assert that a wide ref is on this locale
      case PRIM_GET_END_COUNT:

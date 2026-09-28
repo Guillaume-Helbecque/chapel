@@ -52,6 +52,7 @@ class DomainType final : public CompositeType {
      Subdomain,
      Unknown
    };
+   static const char* kindToString(Kind k);
 
  private:
   // TODO: distributions

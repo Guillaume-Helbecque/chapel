@@ -770,7 +770,7 @@ static void processImportExprs() {
               ResolveScope* last = scopes.top();
               BlockStmt* lastAst = last->asBlockStmt();
               BlockStmt* curBlock = scope->asBlockStmt();
-              if (curBlock != NULL) {
+              if (curBlock && lastAst) {
                 if (lastAst->contains(curBlock)) {
                   scopes.push(scope);
                 } else {

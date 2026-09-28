@@ -75,6 +75,8 @@ CLASS_BEGIN(Context)
 
          auto prepareToGc = std::get<0>(args);
          node->advanceToNextRevision(prepareToGc))
+  METHOD(Context, current_revision, "Get the current revision number of the context",
+         int(), return node->currentRevision())
   METHOD(Context, get_file_text, "Get the text of the file at the given path",
          std::string(chpl::UniqueString), return parsing::fileText(node, std::get<0>(args)).text())
   METHOD(Context, get_compiler_version, "Get the version of the Chapel compiler",
@@ -179,7 +181,7 @@ CLASS_END(ResolvedExpression)
 
 CLASS_BEGIN(MostSpecificCandidate)
   PLAIN_GETTER(MostSpecificCandidate, function, "Get the signature of the function called by this candidate.",
-               TypedSignatureObject*, return TypedSignatureObject::create(contextObject, {node->candidate->fn(), node->poiScope }))
+               TypedSignatureObject*, return createCanonicalTypedSignatureObject(contextObject, node->candidate->fn(), node->poiScope))
 
   // Note: calling node.resolve().formal_actual_mapping() -- thus using the
   // below method -- should be equivalent to calling node.formal_actual_mapping().
@@ -215,8 +217,38 @@ CLASS_BEGIN(TypedSignature)
          return std::make_tuple(intentToString(qt.kind()), qt.type(), qt.param()))
   PLAIN_GETTER(TypedSignature, is_instantiation, "Check if this function is an instantiation of a generic function",
                bool, return node->signature->instantiatedFrom() != nullptr)
+  PLAIN_GETTER(TypedSignature, needs_instantiation, "Check if this function is generic and needs to be instantiated with call site information",
+               bool, return node->signature->needsInstantiation())
   PLAIN_GETTER(TypedSignature, ast, "Get the AST from which this function signature is computed",
                Nilable<const chpl::uast::AstNode*>, return chpl::parsing::idToAst(context, node->signature->id()))
+  PLAIN_GETTER(TypedSignature, return_type, "Get the return type of this function signature",
+               std::optional<QualifiedTypeTuple>,
+               // Avoid computing return type for nested functions, as creating
+               // a dummy RC for nested functions is incorrect.
+               if (node->signature->isNestedFunction()) return {};
+               auto rc = chpl::resolution::createDummyRC(context);
+               auto qt = chpl::resolution::returnType(&rc, node->signature, node->poiScope);
+               if (qt.isUnknown() || qt.isErroneousType()) return {};
+               return std::make_tuple(intentToString(qt.kind()), qt.type(), qt.param()))
+  PLAIN_GETTER(TypedSignature, yield_type, "Get the yield type of this function signature",
+               std::optional<QualifiedTypeTuple>,
+               // Avoid computing return type for nested functions, as creating
+               // a dummy RC for nested functions is incorrect.
+               if (node->signature->isNestedFunction()) return {};
+               auto rc = chpl::resolution::createDummyRC(context);
+               auto qt = chpl::resolution::yieldType(&rc, node->signature, node->poiScope);
+               if (qt.isUnknown() || qt.isErroneousType()) return {};
+               return std::make_tuple(intentToString(qt.kind()), qt.type(), qt.param()))
+  PLAIN_GETTER(TypedSignature, rectangularize, "Replace all generic array formals in this signature with default-rectangular arrays, if possible",
+               std::optional<TypedSignatureObject*>,
+
+               auto sig = node->signature;
+               auto poi = node->poiScope;
+               auto result = makeDefaultRectangular(context, sig, poi);
+               if (result.first) {
+                  return createCanonicalTypedSignatureObject(contextObject, result.first, result.second);
+               }
+               return {})
 CLASS_END(TypedSignature)
 
 CLASS_BEGIN(ApplicabilityResult)

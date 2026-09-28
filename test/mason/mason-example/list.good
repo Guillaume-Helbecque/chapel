@@ -1,5 +1,3 @@
-+ mason clean
-+ mason run --example
 --- available examples ---
  --- depExample.chpl
  --- example.chpl

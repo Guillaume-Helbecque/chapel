@@ -3,21 +3,18 @@ Chapel Contributors
 
 The following people have contributed to Chapel releases:
 
-Contributors to the Chapel 2.7 release
+Contributors to the Chapel 2.10 release
 --------------------------------------
 * Jade Abraham, [HPE]
 * [Dan Bonachea], [Lawrence Berkeley National Laboratory]
+* Paul Cassella, [HPE]
 * [Brad Chamberlain], [HPE]
 * Soohoon Choi, [HPE]
-* Lydia Duncan, [HPE]
 * Daniel Fedorin, [HPE]
-* Rohith Gurram, individual contributor
 * [Paul H. Hargrove], [Lawrence Berkeley National Laboratory]
 * Ben Harshbarger, [HPE]
-* Guillaume Helbecque, individual contributor
-* Engin Kayraklioglu, [HPE]
 * David Longnecker, [HPE]
-* Benson Muite, individual contributor
+* Madhav Madhusoodanan, individual contributor
 * Anna Rift, [HPE]
 
 Contributors to previous releases
@@ -45,7 +42,6 @@ Contributors to previous releases
 * John Byrne, [HPE]
 * Zixian Cai, individual contributor
 * David Callahan, [Cray Inc.]
-* Paul Cassella, [HPE]
 * Sanket Chaudhari, individual contributor
 * Rui Chen, individual contributor
 * Naman Chikara, individual contributor
@@ -67,6 +63,7 @@ Contributors to previous releases
 * Nelson Luís Dias, individual contributor
 * James Dinan, [Cray Inc.] intern from [The Ohio State University]
 * Martha Dumler, [Cray Inc.]
+* Lydia Duncan, [HPE]
 * Prasanth Duvvuri, [GSoC 2021] student from [Northeastern University] (former individual contributor)
 * Saliya Ekanayake, [Indiana University]
 * Omar Elawady, individual contributor
@@ -78,8 +75,10 @@ Contributors to previous releases
 * Rahul Ghangas, [GSoC 2020] student from [Australian National University]
 * Alexey Gokhberg, [Unicorn Enterprises SA]
 * Piyush Gupta, individual contributor
+* Rohith Gurram, individual contributor
 * John Hartman, [HPE]
 * Akihiro Hayashi, [Rice University]
+* Guillaume Helbecque, individual contributor
 * Hannah Hemmaplardh, [Cray Inc.] intern from [University of Washington]
 * Steven Hemmy, [Cray Inc.] intern from [University of Wisconsin]
 * Ian Henriksen, [Sandia National Laboratories]
@@ -99,6 +98,7 @@ Contributors to previous releases
 * Mackale Joyner, [Cray Inc.] intern from [Rice University]
 * Jessica Jueckstock, [MITRE]
 * Avneet Kaur, [RGSoC 2018] student from [Indraprastha Institute of Information Technology, Delhi]
+* Engin Kayraklioglu, [HPE]
 * David Keaton, [Cray Inc.]
 * Krishna Keshav, individual contributor
 * [Shreyas Khandekar], [HPE] (former intern from [University of Arizona])
@@ -118,6 +118,7 @@ Contributors to previous releases
 * Simon Lund, [Københavns Universitet (University of Copenhagen)]
 * Ben McDonald, [HPE] (former intern from [Gonzaga University])
 * Tom MacDonald, [Cray Inc.]
+* Jared Magnusson, individual contributor
 * Deepak Majeti, individual contributor
 * Prabhanjan Mannari, individual contributor
 * Mohaned Mashaly, individual contributor
@@ -132,6 +133,8 @@ Contributors to previous releases
 * Barry Moore, [University of Pittsburgh]
 * Fábio Malacco Moreira, individual contributor
 * Eduardo Morras, individual contributor
+* Benson Muite, individual contributor
+* Tausiff Mujawar, [HPE]
 * Sarthak Munshi, individual contributor / [GSoC 2017] student from [Pune Institute of Computer Technology]
 * Ram Nad, individual contributor
 * Mohammed Nafees, [GSoC 2019] student from [University of Waterloo]
@@ -144,6 +147,7 @@ Contributors to previous releases
 * Sarah Nguyen, [HPE]
 * Michael Noakes, [Cray Inc.]
 * Joshua Olson, individual contributor
+* Hicham Omari, individual contributor
 * Nikhil Padmanabhan, [Yale University]
 * Xuehai Pan, individual contributor
 * Konstantina Panagiotopoulou, individual contributor
@@ -161,19 +165,20 @@ Contributors to previous releases
 * Kumar Prasun, individual contributor
 * Surya Priy, individual contributor
 * Lee Prokowich, [Cray Inc.]
-* Ahmad Rezaii, [HPE]
 * Elliot Ronaghan, [HPE]
 * David Qian, individual contributor
 * Yujia Qiao, individual contributor and [GSoC 2020] student from [Huazhong University of Science and Technology]
 * Nikki Rad, [HPE] intern from [Texas A&M University]
 * Venkatavaradan Raghuraman, individual contributor
 * Yash Raj, individual contributor
+* Ahmad Rezaii, [HPE]
 * Thomas Rolinger, individual contributor
 * Brandon Ross, [University at Buffalo]
 * Preston Sahabu, [Cray Inc.]
 * Sara Salem, [Cairo University]
 * Alberto Sanz, [Universidad de Málaga (University of Malaga)]
 * Erik Schierboom, individual contributor
+* Sebastian Schnorbus, [HPE]
 * Vaibhav Sethia, individual contributor
 * Mohammed Sharfuddin, individual contributor
 * Raj Shekhar, individual contributor

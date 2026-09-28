@@ -37,8 +37,8 @@ for using Chapel:
   * CMake is available and ``cmake`` runs version 3.20 or later.
 
   * The LLVM backend is now the default and it is easiest to use it with a
-    system-wide installation of LLVM and clang. LLVM versions 14 through 21 are
-    currently supported. If a system-wide installation of LLVM and clang with
+    system-wide installation of LLVM and Clang. LLVM versions 15 through 22 are
+    currently supported. If a system-wide installation of LLVM and Clang with
     one of those versions is not available, you can use the bundled LLVM or
     disable LLVM support (see :ref:`readme-chplenv.CHPL_LLVM`).
 
@@ -62,7 +62,7 @@ In addition, several optional components have additional requirements:
 
   * ``m4`` is required for building the bundled GMP
 
-  * ``git`` is required for :ref:`readme-mason`, chapel's package manager
+  * ``git`` is required for :ref:`readme-mason`, Chapel's package manager
 
   * ``pkg-config`` is required for the ``mason system`` subcommands
 
@@ -82,35 +82,3 @@ Installation
 We have used the following commands to install the above prerequisites:
 
 .. include:: prereqs-commands.rst
-
-Compatibility Notes
--------------------
-
-Amazon Linux 2 CHPL_LLVM==system incompatibility
-++++++++++++++++++++++++++++++++++++++++++++++++
-
-Amazon Linux 2 uses GCC 7.3.1 and only provides LLVM 11, but Chapel requires a
-newer GCC and newer LLVM. To use Chapel on this platform, installing a newer
-GCC is required. The repositories provide a GCC 10 package, which can be used
-to configure Chapel.
-
-.. code-block:: bash
-
-    export CC=gcc10-gcc
-    export CXX=gcc10-g++
-    export CHPL_HOST_CC=gcc10-gcc
-    export CHPL_HOST_CXX=gcc10-g++
-
-Chapel can then be built with ``CHPL_LLVM=none`` (still requires the newer GCC)
-or ``CHPL_LLVM=bundled``.
-
-Newer CMake required to build LLVM
-++++++++++++++++++++++++++++++++++
-
-On some systems, the cmake package is not new enough to build the bundled
-LLVM. That can be addressed either by installing CMake from source or by
-installing a system LLVM package using the commands shown above.
-
-Note that the LLVM support library is used even with ``CHPL_LLVM=none``,
-and so installing a system LLVM on these platforms is still important in
-that case.

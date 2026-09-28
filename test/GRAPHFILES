@@ -147,6 +147,7 @@ studies/shootout/submitted/regexdna-submitted.graph
 studies/shootout/submitted/regexdnaredux-submitted.graph
 studies/shootout/submitted/revcomp-submitted.graph
 studies/shootout/submitted/spectralnorm-submitted.graph
+studies/shootout/submitted/spectralnorm-submitted-40000.graph
 # suite: Shootout extras
 studies/shootout/fasta/fasta-extras.graph
 studies/shootout/fasta/fastaredux.graph

@@ -26,13 +26,13 @@
 #include "chpl-align.h"
 #include "chpl-env.h"
 #include "chpl-env-gen.h"
-#include "chplcgfns.h"
 #include "chplsys.h"
 #include "chpl-topo.h"
 #include "chpl-comm.h"
 #include "chpltypes.h"
-#include "error.h"
+#include "chpl-error.h"
 #include "chpl-mem-sys.h"
+#include "chpl-prginfo.h"
 #include "chplexit.h"
 
 #include <errno.h>
@@ -199,6 +199,10 @@ void chpl_topo_pre_comm_init(char *accessiblePUsMask) {
   // the future.
   //
   do_set_area_membind = true;
+
+  CHPL_RT_PRGINFO_DECLARE(CHPL_RT_PRGINFO_ROOT, CHPL_GASNET_SEGMENT);
+  CHPL_RT_PRGINFO_DECLARE(CHPL_RT_PRGINFO_ROOT, CHPL_COMM);
+
   if ((strcmp(CHPL_COMM, "gasnet") == 0
        && strcmp(CHPL_GASNET_SEGMENT, "everything") != 0)) {
       do_set_area_membind = false;
@@ -598,7 +602,7 @@ static void partitionResources(void) {
   if (numColocales > 0) {
     if (numLocalesOnNode <= numColocales) {
       // There are fewer colocales than there should be, probably because the
-      // number of locales isn't evenly divisable by the number of nodes.
+      // number of locales isn't evenly divisible by the number of nodes.
       // Partition resources as if there are the full complement of
       // colocales, but set the number of colocales to the actual number.
       numPartitions = numColocales;
@@ -681,10 +685,10 @@ static void partitionResources(void) {
           logAccSets[i] = s;
         }
 
-        // logAccSets has the cores each parition can use. If they don't have
+        // logAccSets has the cores each partition can use. If they don't have
         // the same number of cores, then we can't proceed with this
         // partitioning scheme.
-        // we also want to avoid the situation where all the paritions
+        // we also want to avoid the situation where all the partitions
         // end up having 0 cores.
         assert(numPartitions > 0);
         int firstSetSize = hwloc_bitmap_weight(logAccSets[0]);
@@ -752,7 +756,7 @@ static void partitionResources(void) {
         if (!chpl_env_rt_get_bool("SILENCE_UNUSED_CORES", false)) {
 
           // TODO: on a hybrid arch like M3 or alderlake with all the
-          // efficency cores in one L2 and all the performance cores in
+          // efficiency cores in one L2 and all the performance cores in
           // another, this can be misleading. For example, currently
           // trying to pin to 'core' on alderlake will report unused cores
           // for all cores, instead of just the ones selected by CHPL_RT_USE_PU_KIND.
@@ -1656,13 +1660,13 @@ done:
 }
 
 static
-void chk_err_fn(const char* file, int lineno, const char* what) {
+void chk_err_fn(const char* file, int32_t lineno, const char* what) {
   chpl_internal_error_v("%s:%d: !(%s)", file, lineno, what);
 }
 
 
 static
-void chk_err_errno_fn(const char* file, int lineno, const char* what) {
+void chk_err_errno_fn(const char* file, int32_t lineno, const char* what) {
   chpl_internal_error_v("%s:%d: !(%s): %s", file, lineno, what,
                         strerror(errno));
 }

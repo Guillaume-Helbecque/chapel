@@ -19,7 +19,9 @@
 
 from typing import (
     Any,
+    DefaultDict,
     Dict,
+    Set,
     List,
     Optional,
     Tuple,
@@ -129,6 +131,41 @@ from lsprotocol.types import (
 )
 
 from lsp_util import *
+from mason import MasonProject
+
+
+def _get_module_for_use_import_symbol(
+    sym: chapel.AstNode,
+) -> Optional[chapel.Module]:
+    """
+    Given the symbol expression from a VisibilityClause (the AST node
+    representing what is being used/imported), resolve it to the Module
+    declaration it names, if any.  Handles both Identifier and Dot cases.
+    """
+    target = None
+    if isinstance(sym, chapel.Identifier):
+        target = sym.to_node()
+    elif isinstance(sym, chapel.Dot):
+        target = sym.to_node()
+    if isinstance(target, chapel.Module):
+        return target
+    return None
+
+
+def _use_import_named_modules(
+    use_or_import: chapel.AstNode,
+) -> List[Tuple[chapel.Module, Range]]:
+    """
+    For a Use or Import AST node, return a list of (Module, range) pairs
+    where each module is one named in a visibility clause and range is the
+    location of that individual visibility clause.
+    """
+    results: List[Tuple[chapel.Module, Range]] = []
+    for vc in use_or_import.visibility_clauses():
+        mod = _get_module_for_use_import_symbol(vc.symbol())
+        if mod is not None:
+            results.append((mod, location_to_range(vc.location())))
+    return results
 
 
 class ChapelLanguageServer(LanguageServer):
@@ -145,11 +182,23 @@ class ChapelLanguageServer(LanguageServer):
         self.use_resolver: bool = config.get("resolver")
         self.type_inlays: bool = config.get("type_inlays")
         self.literal_arg_inlays: bool = config.get("literal_arg_inlays")
+        self.return_type_inlays: bool = config.get("return_type_inlays")
+        self.generic_return_type_inlays: bool = config.get(
+            "generic_return_type_inlays"
+        )
         self.param_inlays: bool = config.get("param_inlays")
         self.enum_inlays: bool = config.get("enum_inlays")
+        self.default_rect_arrays: bool = config.get("default_rect_arrays")
+        self.common_inlays: bool = config.get("common_inlays")
         self.dead_code: bool = config.get("dead_code")
         self.eval_expressions: bool = config.get("eval_expressions")
         self.show_instantiations: bool = config.get("show_instantiations")
+        self.hide_redundant_type_inlays: bool = config.get(
+            "hide_redundant_type_inlays"
+        )
+        self.hide_more_redundant_type_inlays: bool = config.get(
+            "hide_more_redundant_type_inlays"
+        )
         self.end_markers: List[str] = config.get("end_markers")
         self.end_marker_threshold: int = config.get("end_marker_threshold")
         self.end_marker_patterns = self._get_end_marker_patterns()
@@ -256,7 +305,17 @@ class ChapelLanguageServer(LanguageServer):
     def eagerly_process_all_files(self, context: ContextContainer):
         cfg = context.config
         if cfg:
-            for file in cfg.files:
+            for file in cfg.files():
+                log("eagerly processing file", file)
+                # Invocation records the compiler call, and is not really
+                # a file.
+                #
+                # TODO: deprecate current structure in favor of more explicit
+                # files key and invocation key, so files aren't mixed
+                # with non-files in the config.
+                if file == "invocation":
+                    continue
+
                 self.get_file_info("file://" + file, do_update=False)
 
     def get_file_info(
@@ -296,12 +355,21 @@ class ChapelLanguageServer(LanguageServer):
                 context = self.get_context(uri)
 
             file_info, errors = context.new_file_info(uri, self.use_resolver)
-            self.file_infos[fi_key] = file_info
 
-            # Also make this the "default" context for this file in case we
-            # open it.
-            if (uri, None) not in self.file_infos:
-                self.file_infos[(uri, None)] = file_info
+            # Store the file info into our cache. There are two reasons
+            # that we might want to retrieve the FI from the cache:
+            # * We just opened the file in the editor (the key should have
+            #   context ID 'None')
+            # * A call hierarchy expansion requested it (the key should have
+            #   previous file's context ID)
+            # We want to store the file info with both keys so that both
+            # of these methods don't accidentally miss the cache and create
+            # a duplicate FileInfo.
+
+            ctx_id = self.context_ids[context]
+            for key in ((uri, ctx_id), (uri, None)):
+                if key not in self.file_infos:
+                    self.file_infos[key] = file_info
 
         # filter out errors that are not related to the file
         cur_path = uri[len("file://") :]
@@ -346,6 +414,10 @@ class ChapelLanguageServer(LanguageServer):
 
         # get lint diagnostics if applicable
         if self.lint_driver and chplcheck():
+            # chplcheck caches some rule work between runs. Clear this cache.
+            cache = chplcheck().indentation.build_and_run_indentation_collector
+            cache.cache_clear()
+
             lint_diagnostics = chplcheck().lsp.get_lint_diagnostics(
                 fi.context.context, self.lint_driver, fi.get_asts()
             )
@@ -370,10 +442,7 @@ class ChapelLanguageServer(LanguageServer):
             return "\n".join(lines)
 
     def register_workspace(self, uri: str):
-        path = os.path.join(uri[len("file://") :], ".cls-commands.json")
-        config = WorkspaceConfig.from_file(self, path)
-        if config:
-            self.configurations[uri] = config
+        self.configurations[uri] = WorkspaceConfig.from_file(self, uri)
 
     def unregister_workspace(self, uri: str):
         if uri in self.configurations:
@@ -417,6 +486,9 @@ class ChapelLanguageServer(LanguageServer):
             )
         ]
 
+    def _escape_string(self, s: str) -> str:
+        return s.replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")
+
     def _get_param_inlays(
         self, decl: NodeAndRange, qt: chapel.QualifiedType
     ) -> List[InlayHint]:
@@ -427,13 +499,45 @@ class ChapelLanguageServer(LanguageServer):
         if not param:
             return []
 
-        val = str(param)
-        val = val.replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")
+        val = self._escape_string(str(param))
         if isinstance(ty, chapel.CompositeType):
             if ty_decl := ty.decl():
                 assert isinstance(ty_decl, chapel.NamedDecl)
                 if ty_decl.name() == "_bytes":
                     val = "b" + val
+
+        # Suppress inlay if the init expression is a literal whose value is
+        # already obvious from the source (e.g. `param x = 1`, `param b = true`).
+        if isinstance(decl.node, chapel.Variable):
+            node_init = decl.node.init_expression()
+            if (
+                isinstance(
+                    node_init,
+                    (
+                        chapel.IntLiteral,
+                        chapel.UintLiteral,
+                        chapel.RealLiteral,
+                        chapel.ImagLiteral,
+                    ),
+                )
+                and node_init.text() == val
+            ):
+                return []
+            elif isinstance(
+                node_init, (chapel.StringLiteral, chapel.BytesLiteral)
+            ):
+                # Apply the same escaping rules to the literal value to see
+                # if it matches what we'd show.
+                lit_val = '"' + self._escape_string(node_init.value()) + '"'
+                if isinstance(node_init, chapel.BytesLiteral):
+                    lit_val = "b" + lit_val
+
+                if lit_val == val:
+                    return []
+            elif isinstance(node_init, chapel.BoolLiteral):
+                bool_str = "true" if node_init.value() else "false"
+                if bool_str == val:
+                    return []
 
         return [
             InlayHint(
@@ -462,17 +566,61 @@ class ChapelLanguageServer(LanguageServer):
         if isinstance(decl.node, chapel.Formal) and decl.node.is_this():
             return []
 
+        type_str = str(type_)
+
+        # If enabled, suppress inlay for `type t = SomeInit` where the init
+        # is a trivial expression (reference to an identifier that matches the
+        # type, for example).
+        might_be_redundant = (
+            isinstance(decl.node, chapel.Variable)
+            and decl.node.kind() == "type"
+            and decl.node.init_expression()
+        )
+        if self.hide_redundant_type_inlays and might_be_redundant:
+            # Stringify using Chapel's pretty-printer. This way, identifiers,
+            # call expressions, and other common patterns are handled.
+            init_str = str(decl.node.init_expression())
+            if init_str == type_str:
+                return []
+
+        if self.hide_more_redundant_type_inlays and might_be_redundant:
+            init_expr = decl.node.init_expression()
+            assert init_expr is not None  # ensured via might_be_redundant
+            if isinstance(init_expr, chapel.Identifier):
+                # Don't show type aliases for any reference to an internal type
+                if init_expr.refers_to_builtin():
+                    return []
+
+                named_type = None
+                if isinstance(type_, (chapel.CompositeType, chapel.EnumType)):
+                    named_type = type_
+                elif isinstance(type_, chapel.ClassType):
+                    # Get the 'C' from 'owned C?', for example
+                    named_type = type_.manageable_type()
+
+                # Also, if this is something like type T = myRecord,
+                # ignore it, even if myRecord becomes instantiated.
+                to_node = init_expr.to_node()
+                if named_type and isinstance(to_node, chapel.TypeDecl):
+                    if named_type.name() == to_node.name():
+                        return []
+
         name_rng = location_to_range(decl.node.name_location())
-        type_str = ": " + str(type_)
-        text_edits = [TextEdit(Range(name_rng.end, name_rng.end), type_str)]
+        edit_text = ": " + type_str
+        text_edits = [TextEdit(Range(name_rng.end, name_rng.end), edit_text)]
         colon_label = InlayHintLabelPart(": ")
-        label = InlayHintLabelPart(str(type_))
-        if isinstance(type_, chapel.CompositeType):
+        label = InlayHintLabelPart(type_str)
+        typedecl = None
+        if isinstance(type_, (chapel.CompositeType, chapel.EnumType)):
             typedecl = type_.decl()
-            if typedecl and isinstance(typedecl, chapel.NamedDecl):
-                label.location = location_to_location(typedecl.name_location())
-            elif typedecl:
-                label.location = location_to_location(typedecl.location())
+        elif isinstance(type_, chapel.ClassType):
+            if clstype := type_.basic_class_type():
+                typedecl = clstype.decl()
+
+        if typedecl and isinstance(typedecl, chapel.NamedDecl):
+            label.location = location_to_location(typedecl.name_location())
+        elif typedecl:
+            label.location = location_to_location(typedecl.location())
 
         # if the inlay hint is for a loop index type, we cannot insert the type
         # as it would be a syntax error
@@ -509,6 +657,345 @@ class ChapelLanguageServer(LanguageServer):
         if qt is None:
             return inlays
 
+        inlays.extend(self._get_param_inlays(decl, qt))
+        inlays.extend(self._get_type_inlays(decl, qt))
+        return inlays
+
+    def _fn_return_type_for_inlay(
+        self, fn: chapel.Function, sig: chapel.TypedSignature
+    ) -> Optional[chapel.QualifiedType]:
+        """
+        Return whatever type should be shown as an inlay, if possible.
+        May invoke resolution to infer the return type from the body.
+        For iterators, the "return type" is technically an iterator record, but
+        an explicit return type specifies the yield type, so return that.
+        """
+        return sig.yield_type() if fn.kind() == "iter" else sig.return_type()
+
+    def _try_generic_fn_return_type_str(
+        self,
+        fn: chapel.Function,
+        context: chapel.Context,
+    ) -> Optional[str]:
+        """
+        For generic functions (where _fn_return_type_str returns None), attempt
+        to compute a return type string in terms of their generic formals'
+        names. This works best for parametrically polymorphic functions.
+        Do this by using the 'template' mechanism Dyno uses to resolve
+        interfaces, creating placeholders in the signature, resolving a return
+        type in terms of these placeholders, and then replacing placeholders
+        with the names of the formals/type queries they correspond to.
+        """
+        if fn.return_type() is not None:
+            return None
+
+        template_sig = fn.template_signature()
+        if template_sig is None:
+            return None
+
+        if template_sig.needs_instantiation():
+            return None
+
+        with context.track_errors():
+            qt = self._fn_return_type_for_inlay(fn, template_sig)
+        if qt is None:
+            return None
+
+        _, type_, _ = qt
+        if not type_ or isinstance(type_, chapel.ErroneousType):
+            return None
+
+        ret_str = str(type_)
+
+        # Postorder traversal of each formal's subtree. For every node whose
+        # resolved type (under the template signature) is a PlaceholderType,
+        # record a substitution that describes how to refer to it.
+        #  * For formals: formal.type
+        #  * For type queries: just the query name (tq)
+        #  * Anything else: we don't know!
+        subs: dict = {}
+        for formal in fn.formals():
+            for node in chapel.postorder(formal):
+                rr = node.resolve_via(template_sig)
+                if rr is None:
+                    continue
+                if not (node_type := rr.type()):
+                    continue
+                qt, t, _ = node_type
+                if not isinstance(t, chapel.PlaceholderType):
+                    continue
+
+                if isinstance(node, chapel.Formal):
+                    if (
+                        node == t.originator()
+                        or node.type_expression() == t.originator()
+                    ):
+                        if qt == "type":
+                            subs[str(t)] = node.name()
+                        else:
+                            subs[str(t)] = node.name() + ".type"
+                        continue
+
+                elif isinstance(node, chapel.TypeQuery):
+                    subs[str(t)] = node.name()
+                    continue
+
+                # This node has a placeholder type, but didn't create it
+                # in a way we can refer to. This could be benign. Some
+                # examples:
+                #
+                #  proc foo(x, y: x.type), and we're looking at 'y'.
+                #  proc bar(x: list(?tq).eltType), and we're looking at the whole type expr.
+                #
+                # In both of these cases, another subexpression would have
+                # already inserted the substitution. Ensure it has; if not,
+                # give up on creating a generic signature.
+                if str(t) not in subs:
+                    return None
+
+        # No PlaceholderTypes found, the return type is already concrete;
+        # let common inlays handle it to avoid duplicates.
+        if not subs:
+            return None
+
+        orig_str = ret_str
+        for ph_str, replacement in subs.items():
+            ret_str = ret_str.replace(ph_str, replacement)
+
+        # If no substitution was actually applied (the final type does not
+        # depend on a placeholder), don't show a generic inlay, common inlays
+        # will get it.
+        if ret_str == orig_str:
+            return None
+
+        return ret_str
+
+    def _fn_return_type_str(
+        self,
+        fn: chapel.Function,
+        sig: chapel.TypedSignature,
+    ) -> Optional[str]:
+        """
+        Return the inferred return type string for a function given its typed
+        signature, or None if it cannot be determined or is not needed (e.g.,
+        the function already has an explicit return type annotation).
+        """
+        if fn.return_type() is not None:
+            return None
+
+        if sig.needs_instantiation():
+            return None
+
+        qt = self._fn_return_type_for_inlay(fn, sig)
+        if qt is None:
+            return None
+
+        _, type_, _ = qt
+        if not type_ or isinstance(type_, chapel.ErroneousType):
+            return None
+
+        return str(type_)
+
+    def _fn_inlay_from_type_str(
+        self,
+        fn: chapel.Function,
+        type_str: str,
+        data: Optional[Any] = None,
+    ) -> InlayHint:
+        """
+        Build the InlayHint for a function return type
+        """
+
+        # 'throws' is part of the header location but after the type
+        # declaration. Unlike type intents (where the ':' character
+        # at the beginning of the inlay distinguishes it from the preceding
+        # code), 'throws' is on the RIGHT of the inlay, and hard to distinguish.
+        # On top of that, it might be preceded by a space, or it might not
+        # be. To not overcomplicate, insert a potentially too spaced-out hint,
+        # padding it on the right.
+        loc = fn.header_location()
+        padding = ""
+        if throws_loc := fn.throws_location():
+            loc -= throws_loc
+            padding = " "
+
+        position = location_to_range(loc).end
+        edit_text = ": " + type_str + padding
+        text_edits = [TextEdit(Range(position, position), edit_text)]
+        return InlayHint(
+            position=position,
+            label=[
+                InlayHintLabelPart(": "),
+                InlayHintLabelPart(type_str),
+                InlayHintLabelPart(padding),
+            ],
+            text_edits=text_edits,
+            data=data,
+        )
+
+    def get_fn_inlays(
+        self,
+        decl: NodeAndRange,
+        fi: "FileInfo",
+        via: Optional[chapel.TypedSignature] = None,
+    ) -> List[InlayHint]:
+        if not self.return_type_inlays or not self.use_resolver:
+            return []
+
+        fn = decl.node
+        if not isinstance(fn, chapel.Function):
+            return []
+
+        # Get the typed signature to query the inferred return type.
+        if via is not None and via.ast() == fn:
+            sig = via
+        else:
+            sig = fn.initial_signature()
+        if sig is None:
+            return []
+
+        type_str = self._fn_return_type_str(fn, sig)
+        is_generic = False
+        if type_str is None and self.generic_return_type_inlays:
+            type_str = self._try_generic_fn_return_type_str(
+                fn, fi.context.context
+            )
+            is_generic = type_str is not None
+        if type_str is None:
+            return []
+
+        return [
+            self._fn_inlay_from_type_str(
+                fn, type_str, data={"is_generic": is_generic}
+            )
+        ]
+
+    def get_common_fn_inlays(
+        self,
+        decl: NodeAndRange,
+        fi: FileInfo,
+        existing_inlays: List[InlayHint],
+    ) -> List[InlayHint]:
+
+        if (
+            not self.return_type_inlays
+            or not self.common_inlays
+            or not self.use_resolver
+        ):
+            return []
+
+        fn = decl.node
+        if not isinstance(fn, chapel.Function):
+            return []
+
+        # * If there are no instantiations, nothing to show.
+        # * If there's only one, we can't distinguish "common" from
+        #   "just in this one". We still compute the common inlays in that case,
+        #   because its still generally useful and confusing to not show them.
+        #   if more instantiations are added later, the inlays will be updated to
+        #   either show or not show based on whether the new instantiation
+        #   matches the existing one.
+        insts = list(fi.context.instantiations(fn.unique_id()))
+        if len(insts) == 0:
+            return []
+
+        # if there are instantiations and its a generic inlay, we should not show common inlays
+        if (
+            len(insts) >= 1
+            and len(existing_inlays) == 1
+            and existing_inlays[0].data
+            and existing_inlays[0].data.get("is_generic")
+        ):
+            return []
+
+        type_strs = set()
+        for i, _ in insts:
+            # If any one of the instantiations is purely provided by
+            # CLS, don't show common inlays.
+            from_real_call = any(
+                ctx != () for ctx in fi.context.call_contexts(i)
+            )
+            if not from_real_call:
+                return []
+
+            type_str = self._fn_return_type_str(fn, i)
+            if type_str is None:
+                return []
+
+            type_strs.add(type_str)
+
+        if len(type_strs) != 1:
+            return []
+
+        return [self._fn_inlay_from_type_str(fn, type_strs.pop())]
+
+    def get_common_decl_inlays(
+        self,
+        decl: NodeAndRange,
+        fi: FileInfo,
+    ) -> List[InlayHint]:
+
+        inlays = []
+        if not self.common_inlays or not self.use_resolver:
+            return inlays
+
+        node = decl.node
+        if isinstance(node, chapel.Function):
+            return inlays
+
+        parent = node.parent_symbol()
+        if not isinstance(parent, chapel.Function):
+            return inlays
+        parent_fn = parent
+
+        # Validate that the structure we're resolving is roughly what we'd expect
+        parent = parent.parent_symbol()
+        while parent:
+            if not isinstance(parent, (chapel.Module, chapel.CompositeType)):
+                return inlays
+            parent = parent.parent_symbol()
+
+        # * If there are no instantiations, nothing to show.
+        # * If there's only one, we can't distinguish "common" from
+        #   "just in this one". We still compute the common inlays in that case,
+        #   because its still generally useful and confusing to not show them.
+        #   if more instantiations are added later, the inlays will be updated to
+        #   either show or not show based on whether the new instantiation
+        #   matches the existing one.
+        insts = list(fi.context.instantiations(parent_fn.unique_id()))
+        if len(insts) == 0:
+            return inlays
+
+        decl_qts = []
+        for i, _ in insts:
+            # If any one of the instantiations is purely provided by
+            # CLS, don't show common inlays. (e.g., what if we ONLY
+            # have synthetic instantiations? what if only the synthetic
+            # instantiation differs?).
+            from_real_call = any(
+                ctx != () for ctx in fi.context.call_contexts(i)
+            )
+            if not from_real_call:
+                return inlays
+
+            rr = decl.node.resolve_via(i)
+            if rr is None:
+                break
+
+            qt = rr.type()
+            if qt is None:
+                break
+
+            decl_qts.append(qt)
+
+        if len(decl_qts) != len(insts):
+            return inlays
+
+        unique_qts = set(decl_qts)
+        if len(unique_qts) != 1:
+            return inlays
+
+        qt = unique_qts.pop()
         inlays.extend(self._get_param_inlays(decl, qt))
         inlays.extend(self._get_type_inlays(decl, qt))
         return inlays
@@ -636,7 +1123,7 @@ class ChapelLanguageServer(LanguageServer):
             uri=loc.uri,
             range=loc.range,
             selection_range=location_to_range(sym.name_location()),
-            data=[sym.unique_id(), inst_id, context_id],
+            data=["fn", sym.unique_id(), inst_id, context_id],
         )
 
     def fn_to_call_hierarchy_item(
@@ -650,10 +1137,51 @@ class ChapelLanguageServer(LanguageServer):
         """
         fn: chapel.Function = sig.ast()
         item = self.sym_to_call_hierarchy_item(fn)
-        item.data[1] = caller_context.register_signature(sig)
-        item.data[2] = self.context_ids[caller_context]
+        item.data[2] = caller_context.register_signature(sig)
+        item.data[3] = self.context_ids[caller_context]
 
         return item
+
+    def module_to_call_hierarchy_item(
+        self, mod: chapel.Module
+    ) -> CallHierarchyItem:
+        """
+        Given a Chapel Module declaration, return the corresponding call
+        hierarchy item.
+        """
+        loc = location_to_location(mod.location())
+        return CallHierarchyItem(
+            name=mod.name(),
+            detail=str(SymbolSignature(mod)),
+            kind=SymbolKind.Module,
+            uri=loc.uri,
+            range=loc.range,
+            selection_range=location_to_range(mod.name_location()),
+            data=["module", mod.unique_id(), None, None],
+        )
+
+    def unpack_module_call_hierarchy_item(
+        self, item: CallHierarchyItem
+    ) -> Optional[Tuple[FileInfo, chapel.Module]]:
+        """
+        Unpack a module call hierarchy item (created by
+        module_to_call_hierarchy_item) into a (FileInfo, Module) pair.
+        Returns None if the item does not represent a module.
+        """
+        if (
+            item.data is None
+            or not isinstance(item.data, list)
+            or len(item.data) != 4
+            or item.data[0] != "module"
+            or not isinstance(item.data[1], str)
+        ):
+            return None
+        uid = item.data[1]
+        fi, _ = self.get_file_info(item.uri)
+        for node, _ in chapel.each_matching(fi.get_asts(), chapel.Module):
+            if node.unique_id() == uid:
+                return (fi, node)
+        return None
 
     def unpack_call_hierarchy_item(
         self, item: CallHierarchyItem
@@ -663,16 +1191,18 @@ class ChapelLanguageServer(LanguageServer):
         if (
             item.data is None
             or not isinstance(item.data, list)
-            or not isinstance(item.data[0], str)
-            or not isinstance(item.data[1], (str, None))
-            or not isinstance(item.data[2], (str, None))
+            or len(item.data) != 4
+            or item.data[0] != "fn"
+            or not isinstance(item.data[1], str)
+            or not (item.data[2] is None or isinstance(item.data[2], str))
+            or not (item.data[3] is None or isinstance(item.data[3], str))
         ):
             self.show_message(
                 "Call hierarchy item contains missing or invalid additional data",
                 MessageType.Error,
             )
             return None
-        uid, inst_id, ctx = item.data
+        _, uid, inst_id, ctx = item.data
 
         fi, _ = self.get_file_info(item.uri, context_id=ctx)
 
@@ -680,7 +1210,7 @@ class ChapelLanguageServer(LanguageServer):
         # Once the Python bindings supports it, we can use the
         # "ID to AST" function from parsing to do this without iterating.
         for node, _ in chapel.each_matching(fi.get_asts(), chapel.Function):
-            if node.unique_id() == item.data[0]:
+            if node.unique_id() == uid:
                 fn = node
                 break
         else:
@@ -894,7 +1424,11 @@ def run_lsp():
 
         fi, _ = ls.get_file_info(text_doc.uri)
 
-        node_and_loc = fi.get_target_segment_at_position(params.position)
+        # Use the source expression (identifier under cursor) rather than the
+        # declaration it resolves to, because the expression's type is more
+        # sensitive to the current context (e.g., when instantiations are
+        # in play), and because it already has the type information.
+        node_and_loc = fi.get_source_segment_at_position(params.position)
         if not node_and_loc:
             return None
 
@@ -903,10 +1437,18 @@ def run_lsp():
             return None
 
         _, type_, _ = qt
-        if not isinstance(type_, chapel.CompositeType):
+        if not isinstance(
+            type_, (chapel.CompositeType, chapel.ClassType, chapel.EnumType)
+        ):
             return None
 
-        decl = type_.decl()
+        decl = None
+        if isinstance(type_, (chapel.CompositeType, chapel.EnumType)):
+            decl = type_.decl()
+        elif isinstance(type_, chapel.ClassType):
+            if clstype := type_.basic_class_type():
+                decl = clstype.decl()
+
         if not decl:
             return None
 
@@ -1098,7 +1640,20 @@ def run_lsp():
 
         for decl in decls:
             instantiation = fi.get_inst_segment_at_position(decl.rng.start)
-            inlays.extend(ls.get_decl_inlays(decl, instantiation))
+            decl_inlays = ls.get_decl_inlays(decl, instantiation)
+            fn_inlays = ls.get_fn_inlays(decl, fi, instantiation)
+            inlays.extend(decl_inlays)
+            inlays.extend(fn_inlays)
+
+            if instantiation is not None:
+                continue
+
+            # TODO: common inlays should be extended to params as well as types
+            #       both for types of params and values of params
+            common_decl_inlays = ls.get_common_decl_inlays(decl, fi)
+            common_fn_inlays = ls.get_common_fn_inlays(decl, fi, fn_inlays)
+            inlays.extend(common_decl_inlays)
+            inlays.extend(common_fn_inlays)
 
         for call in calls:
             call_range = location_to_range(call.location())
@@ -1193,19 +1748,21 @@ def run_lsp():
         if not ls.show_instantiations:
             return actions
 
+        # Collect instantiations from other files
+        ls.eagerly_process_all_files(fi.context)
+
         text_doc = ls.workspace.get_text_document(params.text_document.uri)
 
         fi, _ = ls.get_file_info(text_doc.uri)
 
         decls = fi.def_segments.elts
         for decl in decls:
-            if (
-                isinstance(decl.node, chapel.Function)
-                and decl.node.unique_id() in fi.instantiations
-            ):
-                insts = fi.instantiations[decl.node.unique_id()]
+            if isinstance(
+                decl.node, chapel.Function
+            ) and fi.context.has_instantiation(decl.node.unique_id()):
+                insts = fi.context.instantiations(decl.node.unique_id())
                 actions_per_decl = []
-                for i, inst in enumerate(insts):
+                for inst, from_file in insts:
                     # Skip over "concrete" instantiations. They're in
                     # the list to track calls to concrete functions,
                     # but they don't have any type substitutions, so there's
@@ -1213,15 +1770,23 @@ def run_lsp():
                     if not inst.is_instantiation():
                         continue
 
+                    i = from_file.index_of_instantiation(decl.node, inst)
+                    assert i > -1
+                    label = "Show Instantiation"
+                    if all(x == () for x in fi.context.call_contexts(inst)):
+                        label += " (Default-Rectangular)"
+
                     action = CodeLens(
                         data=(decl.node.unique_id(), i),
                         command=Command(
-                            "Show Instantiation",
+                            label,
                             "chpl-language-server/showInstantiation",
                             [
                                 params.text_document.uri,
                                 decl.node.unique_id(),
                                 i,
+                                from_file.uri,
+                                from_file.context.revision(),
                             ],
                         ),
                         range=decl.rng,
@@ -1248,12 +1813,16 @@ def run_lsp():
 
     @server.command("chpl-language-server/showInstantiation")
     async def show_instantiation(
-        ls: ChapelLanguageServer, data: Tuple[str, str, int]
+        ls: ChapelLanguageServer, data: Tuple[str, str, int, str, int]
     ):
-        uri, unique_id, i = data
+        uri, unique_id, i, source_uri, revision = data
 
         fi, _ = ls.get_file_info(uri)
+        source_fi, _ = ls.get_file_info(source_uri)
         decl = fi.find_decl_by_unique_id(unique_id)
+
+        if source_fi.context.revision() != revision:
+            return
 
         if decl is None:
             return
@@ -1262,7 +1831,7 @@ def run_lsp():
         if not isinstance(node, chapel.Function):
             return
 
-        inst = fi.instantiation_at_index(node, i)
+        inst = source_fi.instantiation_at_index(node, i)
         node_and_range = NodeAndRange.for_entire_node(decl.node)
         fi.instantiation_segments.overwrite((node_and_range, inst))
         fi.update_call_segments_from_instantiations(node_and_range.rng)
@@ -1316,16 +1885,13 @@ def run_lsp():
         tokens.sort(key=lambda x: (x[0], x[1]))
         return SemanticTokens(data=encode_deltas(tokens, 0, 0))
 
-    @server.feature(TEXT_DOCUMENT_PREPARE_CALL_HIERARCHY)
-    async def prepare_call_hierarchy(
-        ls: ChapelLanguageServer, params: CallHierarchyPrepareParams
+    def _prepare_call_hierarchy_fn(
+        ls: ChapelLanguageServer,
+        params: CallHierarchyPrepareParams,
+        fi: FileInfo,
     ):
         if not ls.use_resolver:
             return None
-
-        text_doc = ls.workspace.get_text_document(params.text_document.uri)
-
-        fi, _ = ls.get_file_info(text_doc.uri)
 
         # Get function from a particular call under the cursor.
         sigs: List[chapel.TypedSignature] = []
@@ -1346,44 +1912,167 @@ def run_lsp():
             instantiation = fi.get_inst_segment_at_position(params.position)
             if instantiation and instantiation.ast() == node:
                 sigs.append(instantiation)
-            elif uid in fi.instantiations:
-                sigs.extend(fi.instantiations[uid].keys())
+            elif fi.context.has_instantiation(uid):
+                sigs.extend(sig for sig, _ in fi.context.instantiations(uid))
 
         # Oddly, returning multiple here makes for no child nodes in the VSCode
         # UI. Just take one signature for now.
         return next(
             ([ls.fn_to_call_hierarchy_item(sig, fi.context)] for sig in sigs),
-            [],
+            None,
         )
 
-    @server.feature(CALL_HIERARCHY_INCOMING_CALLS)
-    async def call_hierarchy_incoming(
-        ls: ChapelLanguageServer, params: CallHierarchyIncomingCallsParams
+    def _prepare_call_hierarchy_module(
+        ls: ChapelLanguageServer,
+        params: CallHierarchyPrepareParams,
+        fi: FileInfo,
     ):
-        if not ls.use_resolver:
-            return None
+        decl = fi.get_def_segment_at_position(params.position)
+        node = decl.node if decl else None
 
-        unpacked = ls.unpack_call_hierarchy_item(params.item)
-        if unpacked is None:
-            return None
+        # Handle the case where the cursor is on a module declaration.
+        if isinstance(node, chapel.Module):
+            return [ls.module_to_call_hierarchy_item(node)]
 
-        fi, fn, instantiation = unpacked
+        # Handle the case where the cursor is on a module name in a use/import.
+        use_seg = fi.get_use_segment_at_position(params.position)
+        if use_seg is not None and isinstance(
+            use_seg.resolved_to.node, chapel.Module
+        ):
+            # check that the use-seg is part of a VisibilityClause:
+            # qualified calls oughtn't trigger import hierarchy,
+            # since they aren't imports.
+            parent = use_seg.ident.node.parent()
+            while parent:
+                if isinstance(parent, chapel.VisibilityClause):
+                    break
+                parent = parent.parent()
+            else:
+                return []
 
-        # If there are no signatures that we found, there are no calls that
-        # we are aware of.
+            return [ls.module_to_call_hierarchy_item(use_seg.resolved_to.node)]
+
+        return []
+
+    @server.feature(TEXT_DOCUMENT_PREPARE_CALL_HIERARCHY)
+    async def prepare_call_hierarchy(
+        ls: ChapelLanguageServer, params: CallHierarchyPrepareParams
+    ):
+        text_doc = ls.workspace.get_text_document(params.text_document.uri)
+
+        fi, _ = ls.get_file_info(text_doc.uri)
+
+        hierarchy_items_fn = _prepare_call_hierarchy_fn(ls, params, fi)
+        if hierarchy_items_fn is not None:
+            return hierarchy_items_fn
+
+        return _prepare_call_hierarchy_module(ls, params, fi)
+
+    def _module_hierarchy_incoming(
+        ls: ChapelLanguageServer,
+        fi: FileInfo,
+        mod: chapel.Module,
+    ) -> List[CallHierarchyIncomingCall]:
+        """Return modules that import the given module."""
+
+        # Unlike function call hierarchy, which relies on the resolver's built-in
+        # cross-file call graph, module incoming requires a manual AST scan.
+        # Ensure all files in the compilation context are loaded first so that
+        # importers in other files are visible.
+        #
+        # Note: we _could_ adjust the FileInfo + Context to track this for us,
+        # but since it would only be used for call hierarchy, it seems
+        # reasonable to gate this here. This is different from the function
+        # call graph, which we used for other things (inlays, go-to-def, etc.)
+        ls.eagerly_process_all_files(fi.context)
+
+        # Collect all importing modules across all open file infos.
+        incoming_ranges: DefaultDict[chapel.Module, List[Range]] = defaultdict(
+            list
+        )
+        for other_fi in fi.context.file_infos:
+
+            for use_or_import, _ in chapel.each_matching(
+                other_fi.get_asts(), {chapel.Use, chapel.Import}
+            ):
+                for named_mod, vc_range in _use_import_named_modules(
+                    use_or_import
+                ):
+                    if named_mod != mod:
+                        continue
+
+                    # Treat uses and imports, even inside functions and
+                    # smaller scopes, as belonging to the module containing them.
+                    parent = use_or_import.parent_module()
+                    assert parent is not None
+                    incoming_ranges[parent].append(vc_range)
+
+        return [
+            CallHierarchyIncomingCall(
+                ls.module_to_call_hierarchy_item(importer),
+                from_ranges=ranges,
+            )
+            for importer, ranges in incoming_ranges.items()
+        ]
+
+    def _module_hierarchy_outgoing(
+        ls: ChapelLanguageServer,
+        mod: chapel.Module,
+    ) -> List[CallHierarchyOutgoingCall]:
+        """Return modules that the given module imports."""
+        scope = mod.scope()
+        if scope is None:
+            return []
+        imported_modules = scope.modules_named_in_use_or_import()
+
+        from_ranges_map: DefaultDict[chapel.Module, List[Range]] = defaultdict(
+            list
+        )
+        for use_or_import, _ in chapel.each_matching(
+            mod, {chapel.Use, chapel.Import}
+        ):
+            # Don't treat parent modules as importing their children's
+            # imports.
+            if use_or_import.parent_module() != mod:
+                continue
+            for named_mod, vc_range in _use_import_named_modules(use_or_import):
+                from_ranges_map[named_mod].append(vc_range)
+
+        return [
+            CallHierarchyOutgoingCall(
+                ls.module_to_call_hierarchy_item(imported),
+                from_ranges=from_ranges_map.get(
+                    imported,
+                    [location_to_range(mod.location())],
+                ),
+            )
+            for imported in imported_modules
+        ]
+
+    def _fn_hierarchy_incoming(
+        ls: ChapelLanguageServer,
+        fi: FileInfo,
+        fn: chapel.Function,
+        instantiation: Optional[chapel.TypedSignature],
+    ) -> List[CallHierarchyIncomingCall]:
+        """Return callers of the given function instantiation."""
         if instantiation is None:
             return []
 
+        assert instantiation in fi.context.global_inst_contexts
+        calls = fi.context.call_contexts(instantiation)
+
         # TODO:
-        # Here too, because there's no chapel-py way to convert an ID back
-        # to a node, note the node whose ID we use in a dictionary (hack_id_to_node)
-        # to look up later.
-        calls = fi.instantiations[fn.unique_id()][instantiation]
+        # Because there's no chapel-py way to convert an ID back to a node,
+        # record nodes whose IDs we use so we can look them up later.
         hack_id_to_node: Dict[str, chapel.NamedDecl] = {}
-        incoming_calls: Dict[
+        incoming_calls: DefaultDict[
             Union[chapel.TypedSignature, str], List[chapel.FnCall]
         ] = defaultdict(list)
-        for call, via in calls:
+        for call_context in calls:
+            if len(call_context) == 0:
+                continue
+            call, via = call_context
             # If the call is from an instantiation, use the instantiation
             # as the hierarchy item anchor.
             if via is not None:
@@ -1396,68 +2085,89 @@ def run_lsp():
                 incoming_calls[parent_sym.unique_id()].append(call)
 
         to_return = []
-        for called_fn, calls in incoming_calls.items():
+        for called_fn, fn_calls in incoming_calls.items():
             if isinstance(called_fn, str):
                 item = ls.sym_to_call_hierarchy_item(hack_id_to_node[called_fn])
             else:
                 item = ls.fn_to_call_hierarchy_item(called_fn, fi.context)
-
             to_return.append(
                 CallHierarchyIncomingCall(
                     item,
                     from_ranges=[
-                        location_to_range(call.location()) for call in calls
+                        location_to_range(call.location()) for call in fn_calls
                     ],
                 )
             )
-
         return to_return
 
-    @server.feature(CALL_HIERARCHY_OUTGOING_CALLS)
-    async def call_hierarchy_outgoing(
-        ls: ChapelLanguageServer, params: CallHierarchyOutgoingCallsParams
-    ):
-        if not ls.use_resolver:
-            return None
-
-        unpacked = ls.unpack_call_hierarchy_item(params.item)
-        if unpacked is None:
-            return None
-
-        fi, fn, instantiation = unpacked
-
-        outgoing_calls: Dict[chapel.TypedSignature, List[chapel.FnCall]] = (
-            defaultdict(list)
-        )
+    def _fn_hierarchy_outgoing(
+        ls: ChapelLanguageServer,
+        fi: FileInfo,
+        fn: chapel.Function,
+        instantiation: Optional[chapel.TypedSignature],
+    ) -> List[CallHierarchyOutgoingCall]:
+        """Return functions called by the given function instantiation."""
+        outgoing_calls: DefaultDict[
+            chapel.TypedSignature, List[chapel.FnCall]
+        ] = defaultdict(list)
         for call, _ in chapel.each_matching(fn, chapel.FnCall):
             rr = (
                 call.resolve_via(instantiation)
                 if instantiation
                 else call.resolve()
             )
-
             if rr is None:
                 continue
-
             msc = rr.most_specific_candidate()
             if msc is None:
                 continue
-
             outgoing_calls[msc.function()].append(call)
 
-        to_return = []
-        for called_fn, calls in outgoing_calls.items():
-            item = ls.fn_to_call_hierarchy_item(called_fn, fi.context)
-            to_return.append(
-                CallHierarchyOutgoingCall(
-                    item,
-                    from_ranges=[
-                        location_to_range(call.location()) for call in calls
-                    ],
-                )
+        return [
+            CallHierarchyOutgoingCall(
+                ls.fn_to_call_hierarchy_item(called_fn, fi.context),
+                from_ranges=[
+                    location_to_range(call.location()) for call in fn_calls
+                ],
             )
+            for called_fn, fn_calls in outgoing_calls.items()
+        ]
 
-        return to_return
+    @server.feature(CALL_HIERARCHY_INCOMING_CALLS)
+    async def call_hierarchy_incoming(
+        ls: ChapelLanguageServer, params: CallHierarchyIncomingCallsParams
+    ):
+        mod_unpacked = ls.unpack_module_call_hierarchy_item(params.item)
+        if mod_unpacked is not None:
+            fi, mod = mod_unpacked
+            return _module_hierarchy_incoming(ls, fi, mod)
+
+        if not ls.use_resolver:
+            return None
+
+        unpacked = ls.unpack_call_hierarchy_item(params.item)
+        if unpacked is None:
+            return None
+        fi, fn, instantiation = unpacked
+        return _fn_hierarchy_incoming(ls, fi, fn, instantiation)
+
+    @server.feature(CALL_HIERARCHY_OUTGOING_CALLS)
+    async def call_hierarchy_outgoing(
+        ls: ChapelLanguageServer, params: CallHierarchyOutgoingCallsParams
+    ):
+        mod_unpacked = ls.unpack_module_call_hierarchy_item(params.item)
+        if mod_unpacked is not None:
+            _, mod = mod_unpacked
+            return _module_hierarchy_outgoing(ls, mod)
+
+        if not ls.use_resolver:
+            return None
+
+        unpacked = ls.unpack_call_hierarchy_item(params.item)
+        if unpacked is None:
+            return None
+        fi, fn, instantiation = unpacked
+        return _fn_hierarchy_outgoing(ls, fi, fn, instantiation)
 
     server.start_io()
 

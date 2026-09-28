@@ -77,3 +77,59 @@ struct complex128 complexSqrt128(struct complex128 x) {
   ret.i = cimag(n);
   return ret;
 }
+
+struct complex64 complexPow64(struct complex64 x, struct complex64 y) {
+  float complex c = makeFloatComplex(x.r, x.i);
+  float complex n = cpowf(c, makeFloatComplex(y.r, y.i));
+  struct complex64 ret;
+  ret.r = crealf(n);
+  ret.i = cimagf(n);
+  return ret;
+}
+struct complex128 complexPow128(struct complex128 x, struct complex128 y) {
+  double complex c = makeDoubleComplex(x.r, x.i);
+  double complex n = cpow(c, makeDoubleComplex(y.r, y.i));
+  struct complex128 ret;
+  ret.r = creal(n);
+  ret.i = cimag(n);
+  return ret;
+}
+
+struct complex64 complexMul64(struct complex64 c1, struct complex64 c2) {
+  float complex n1 = makeFloatComplex(c1.r, c1.i);
+  float complex n2 = makeFloatComplex(c2.r, c2.i);
+  float complex n = n1 * n2;
+  struct complex64 ret;
+  ret.r = crealf(n);
+  ret.i = cimagf(n);
+  return ret;
+}
+
+struct complex128 complexMul128(struct complex128 c1, struct complex128 c2) {
+  double complex n1 = makeDoubleComplex(c1.r, c1.i);
+  double complex n2 = makeDoubleComplex(c2.r, c2.i);
+  double complex n = n1 * n2;
+  struct complex128 ret;
+  ret.r = creal(n);
+  ret.i = cimag(n);
+  return ret;
+}
+
+struct complex64 complexDiv64(struct complex64 c1, struct complex64 c2) {
+  float complex n1 = makeFloatComplex(c1.r, c1.i);
+  float complex n2 = makeFloatComplex(c2.r, c2.i);
+  float complex n = n1 / n2;
+  struct complex64 ret;
+  ret.r = crealf(n);
+  ret.i = cimagf(n);
+  return ret;
+}
+struct complex128 complexDiv128(struct complex128 c1, struct complex128 c2) {
+  double complex n1 = makeDoubleComplex(c1.r, c1.i);
+  double complex n2 = makeDoubleComplex(c2.r, c2.i);
+  double complex n = n1 / n2;
+  struct complex128 ret;
+  ret.r = creal(n);
+  ret.i = cimag(n);
+  return ret;
+}

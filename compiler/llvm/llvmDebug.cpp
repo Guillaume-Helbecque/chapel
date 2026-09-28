@@ -122,6 +122,7 @@ struct DefinitionInfo {
       astr("SharedObject"),
       astr("String"),
       astr("LocaleModelHelpRuntime"),
+      astr("ChapelRuntimeInterface"),
     });
     if (sym_->getModule()->modTag == MOD_INTERNAL) {
       auto modName = sym_->getModule()->name;
@@ -153,25 +154,6 @@ struct DefinitionInfo {
   }
 
 };
-
-
-// Ifdef'd to avoid unused warning, because its only usage has the same ifdef.
-// If this gets used elsewhere the ifdef can be removed; besides the warning,
-// there is nothing wrong with this code being included without
-// HAVE_LLVM_TYPED_POINTERS.
-#ifdef HAVE_LLVM_TYPED_POINTERS
-static
-std::string myGetTypeName(llvm::Type *ty) {
-  std::string TypeName;
-  llvm::raw_string_ostream TypeStream(TypeName);
-  if(ty)
-    ty->print(TypeStream);
-  else
-    TypeStream << "Printing <null> Type";
-  TypeStream.flush();
-  return TypeName;
-}
-#endif
 
 
 static std::pair<llvm::DIType*, int>
@@ -489,50 +471,6 @@ llvm::DIType* DebugData::constructTypeForPointer(llvm::Type* ty, Type* type) {
     return N;
   } else {
     if (type->astTag == E_PrimitiveType) {
-#ifdef HAVE_LLVM_TYPED_POINTERS
-      llvm::Type *PointeeTy = ty->getPointerElementType();
-      // handle string, c_string, nil, opaque, raw_c_void_ptr
-      if (PointeeTy->isIntegerTy()) {
-        llvm::DIType* pteIntDIType; //create the DI-pointeeType
-        pteIntDIType = dibuilder->createBasicType(
-          myGetTypeName(PointeeTy),
-          layout.getTypeSizeInBits(PointeeTy),
-          llvm::dwarf::DW_ATE_unsigned);
-
-        auto N = dibuilder->createPointerType(
-          pteIntDIType,
-          layout.getPointerSizeInBits(ty->getPointerAddressSpace()),
-          0,
-          chpl::empty,
-          name);
-
-        type->symbol->llvmDIType = N;
-        return N;
-      } else if (PointeeTy->isStructTy()) {
-        // handle qio_channel_ptr_t, qiofile__ptr_t, syserr, file_
-        auto pteStrDIType = dibuilder->createStructType(
-          defInfo.maybeScope(),
-          PointeeTy->getStructName(),
-          defInfo.maybeFile(),
-          defInfo.maybeLine(),
-          (PointeeTy->isSized() ? layout.getTypeSizeInBits(PointeeTy) : 8), /* SizeInBits */
-          (PointeeTy->isSized() ? 8*layout.getABITypeAlign(PointeeTy).value() : 8), /* AlignInBits */
-          llvm::DINode::FlagZero,
-          nullptr, /* DerivedFrom */
-          nullptr /* Elements */
-        );
-
-        auto N = dibuilder->createPointerType(
-          pteStrDIType,
-          layout.getPointerSizeInBits(ty->getPointerAddressSpace()),
-          0,
-          chpl::empty,
-          name);
-
-        type->symbol->llvmDIType = N;
-        return N;
-      }
-#else
       if (type->symbol->hasFlag(FLAG_EXTERN)) {
         // handle extern types
         // TODO: this should probably create forwarddecls?
@@ -551,7 +489,6 @@ llvm::DIType* DebugData::constructTypeForPointer(llvm::Type* ty, Type* type) {
                   type->symbol->name, type->astTag, ty->getTypeID());
       }
       return nullptr;
-#endif
     } else if (type->astTag == E_AggregateType) {
       // dealing with classes/records/unions
       AggregateType *this_class = (AggregateType *)type;
@@ -702,7 +639,7 @@ struct ConstructObject : public ConstructDIType {
       debugData->getType(CLASS_ID_TYPE)
     );
     EltTys.push_back(cidDITy);
-    // since dtObject has a single field, we can directly assume the size and alignent to
+    // since dtObject has a single field, we can directly assume the size and alignment to
     // be the same as its single field
     llvm::DIType* N = DIB->createStructType(
       defInfo.maybeScope(),
@@ -859,7 +796,7 @@ struct ConstructEnum : public ConstructDIType {
 #if LLVM_VERSION_MAJOR >= 18
     RuntimeLang,
 #endif
-      "", /* UniqueIdentifer */
+      "", /* UniqueIdentifier */
       true /* isScoped */
     );
     enumType->symbol->llvmDIType = N;

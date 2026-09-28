@@ -64,6 +64,9 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
+#if HAVE_LLVM_VER >= 220
+#include "llvm/IR/SystemLibraries.h"
+#endif
 #endif
 
 
@@ -127,7 +130,8 @@ const char* CHPL_TARGET_BUNDLED_RUNTIME_LINK_ARGS = NULL;
 const char* CHPL_TARGET_BUNDLED_PROGRAM_LINK_ARGS = NULL;
 const char* CHPL_TARGET_SYSTEM_RUNTIME_LINK_ARGS = NULL;
 const char* CHPL_TARGET_SYSTEM_PROGRAM_LINK_ARGS = NULL;
-const char* CHPL_TARGET_USE_RUNTIME_LINK_ARGS = NULL;
+const char* CHPL_TARGET_USE_STATIC_RUNTIME_LINK_ARGS = NULL;
+const char* CHPL_TARGET_USE_SHARED_RUNTIME_LINK_ARGS = NULL;
 
 const char* CHPL_CUDA_LIBDEVICE_PATH = NULL;
 const char* CHPL_ROCM_LLVM_PATH = NULL;
@@ -201,6 +205,7 @@ bool fNoDivZeroChecks = false;
 bool fNoFormalDomainChecks = false;
 bool fNoLocalChecks = false;
 bool fNoNilChecks = false;
+bool fNoUnionChecks = false;
 bool fIgnoreNilabilityErrors = false;
 bool fOverloadSetsChecks = true;
 bool fNoStackChecks = false;
@@ -357,6 +362,8 @@ char stopAfterPass[128] = "";
 
 const char* compileCommandFilename = "compileCommand.tmp";
 const char* compileCommand = NULL;
+const char* compileEnvsFilename = "compileEnvs.tmp";
+std::string compileEnvs = "";
 char compileVersion[64];
 
 std::array<std::string, 2> editions ({{"2.0", "preview"}});
@@ -559,7 +566,7 @@ static void setupChplLLVM(void) {
 #endif
 }
 
-static void recordCodeGenStrings(int argc, char* argv[]) {
+static void recordCodeGenStrings(ArgumentState* argState, int argc, char* argv[]) {
   compileCommand = astr("chpl ");
   // WARNING: This does not handle arbitrary sequences of escaped characters
   //  in string arguments
@@ -586,6 +593,11 @@ static void recordCodeGenStrings(int argc, char* argv[]) {
   }
 
   get_version(compileVersion, sizeof(compileVersion));
+
+  for (int i = 0; i < argState->nenv_arguments; i += 2) {
+    compileEnvs += std::string("  ") + argState->env_argument[i] + "=" +
+                                       argState->env_argument[i+1] + "\\n";
+  }
 }
 
 static void setHome(const ArgumentDescription* desc, const char* arg) {
@@ -739,7 +751,10 @@ static void setLLVMFlags(const ArgumentDescription* desc, const char* arg) {
 
   llvmFlags += arg;
 
-  if (0 == strcmp(arg, "--help")) {
+  if (0 == strcmp(arg, "--help-hidden")) {
+    std::vector<const char*> Args = {"chpl --mllvm", "--help-hidden", nullptr};
+    llvm::cl::ParseCommandLineOptions(Args.size()-1, &Args[0]);
+  } else if (0 == strcmp(arg, "--help")) {
     std::vector<const char*> Args = {"chpl --mllvm", "--help", nullptr};
     llvm::cl::ParseCommandLineOptions(Args.size()-1, &Args[0]);
   }
@@ -759,13 +774,6 @@ static void setLLVMRemarksFunctions(const ArgumentDescription* desc, const char*
   for(auto n: fNames) {
     llvmRemarksFunctionsToShow.push_back(n);
   }
-}
-
-static void setLLVMPrintPasses(const ArgumentDescription* desc, const char* arg) {
-#ifdef LLVM_USE_OLD_PASSES
-  printf("Cannot use '--llvm-print-passes' with this version of LLVM");
-  clean_exit(1);
-#endif
 }
 
 static void handleLibrary(const ArgumentDescription* desc, const char* arg_unused) {
@@ -843,6 +851,7 @@ static void runAsCompilerDriver(int argc, char* argv[]) {
 
   // Save initial compilation command before re-invocations.
   saveDriverTmp(compileCommandFilename, compileCommand);
+  saveDriverTmp(compileEnvsFilename, compileEnvs);
 
   // invoke compilation phase
   if ((status = runDriverCompilationPhase(argc, argv)) != 0) {
@@ -1056,6 +1065,14 @@ static void addModulePath(const ArgumentDescription* desc, const char* newpath) 
   cmdLineModPaths.push_back(std::string(newpath));
 }
 
+static void addInternalModulePath(const ArgumentDescription* desc, const char* newpath) {
+  gDynoPrependInternalModulePaths.push_back(newpath);
+}
+
+static void addStandardModulePath(const ArgumentDescription* desc, const char* newpath) {
+  gDynoPrependStandardModulePaths.push_back(newpath);
+}
+
 static void noteCppLinesSet(const ArgumentDescription* desc, const char* unused) {
   userSetCppLineno = true;
 }
@@ -1105,6 +1122,7 @@ static void setChecks(const ArgumentDescription* desc, const char* unused) {
   fNoStackChecks  = fNoChecks;
   fNoCastChecks = fNoChecks;
   fNoDivZeroChecks = fNoChecks;
+  fNoUnionChecks = fNoChecks;
 }
 
 static void setFastFlag(const ArgumentDescription* desc, const char* unused) {
@@ -1301,7 +1319,7 @@ static void driverSetDevelSettings(const ArgumentDescription* desc, const char* 
   }
 }
 
-void addDynoGenLib(const ArgumentDescription* desc, const char* newpath) {
+static void addDynoGenLib(const ArgumentDescription* desc, const char* newpath) {
   if (fDynoGenLib) {
     USR_FATAL("cannot have multiple --dyno-gen-lib / --dyno-gen-std flags");
   }
@@ -1430,7 +1448,7 @@ static ArgumentDescription arg_desc[] = {
  {"inline-iterators", ' ', NULL, "Enable [disable] iterator inlining", "n", &fNoInlineIterators, "CHPL_DISABLE_INLINE_ITERATORS", NULL},
  {"inline-iterators-yield-limit", ' ', "<limit>", "Limit number of yields permitted in inlined iterators", "I", &inline_iter_yield_limit, "CHPL_INLINE_ITER_YIELD_LIMIT", NULL},
  {"live-analysis", ' ', NULL, "Enable [disable] live variable analysis", "n", &fNoLiveAnalysis, "CHPL_DISABLE_LIVE_ANALYSIS", NULL},
- {"loop-invariant-code-motion", ' ', NULL, "Enable [disable] loop invariant code motion", "n", &fNoLoopInvariantCodeMotion, NULL, NULL},
+ {"loop-invariant-code-motion", ' ', NULL, "Enable [disable] loop invariant code motion", "n", &fNoLoopInvariantCodeMotion, "CHPL_LOOP_INVARIANT_CODE_MOTION", NULL},
  {"optimize-forall-unordered-ops", ' ', NULL, "Enable [disable] optimization of foralls to unordered operations", "n", &fNoOptimizeForallUnordered, "CHPL_DISABLE_OPTIMIZE_FORALL_UNORDERED_OPS", NULL},
  {"optimize-range-iteration", ' ', NULL, "Enable [disable] optimization of iteration over anonymous ranges", "n", &fNoOptimizeRangeIteration, "CHPL_DISABLE_OPTIMIZE_RANGE_ITERATION", NULL},
  {"optimize-loop-iterators", ' ', NULL, "Enable [disable] optimization of iterators composed of a single loop", "n", &fNoOptimizeLoopIterators, "CHPL_DISABLE_OPTIMIZE_LOOP_ITERATORS", NULL},
@@ -1466,6 +1484,7 @@ static ArgumentDescription arg_desc[] = {
  {"local-checks", ' ', NULL, "Enable [disable] local block checking", "n", &fNoLocalChecks, NULL, NULL},
  {"nil-checks", ' ', NULL, "Enable [disable] runtime nil checking", "n", &fNoNilChecks, "CHPL_NIL_CHECKS", NULL},
  {"stack-checks", ' ', NULL, "Enable [disable] stack overflow checking", "n", &fNoStackChecks, "CHPL_STACK_CHECKS", setStackChecks},
+ {"union-checks", ' ', NULL, "Enable [disable] union field checking", "n", &fNoUnionChecks, NULL, NULL},
 
  {"", ' ', NULL, "Code Generation Options", NULL, NULL, NULL, NULL},
  {"codegen", ' ', NULL, "[Don't] Do code generation", "n", &no_codegen, "CHPL_CODEGEN", NULL},
@@ -1569,7 +1588,7 @@ static ArgumentDescription arg_desc[] = {
  {"llvm-print-ir-file", ' ', "<file>", "Specifies the filename to write the LLVM IR to", "S", NULL, "CHPL_LLVM_PRINT_IR_FILE", &setPrintIrFile},
  {"llvm-remarks", ' ', "<regex>", "Print LLVM optimization remarks", "S", NULL, NULL, &setLLVMRemarksFilters},
  {"llvm-remarks-function", ' ', "<name>", "Print LLVM optimization remarks only for these functions", "S", NULL, NULL, &setLLVMRemarksFunctions},
- {"llvm-print-passes", ' ', NULL, "Print the LLVM optimizations to be run", "F", &fLlvmPrintPasses, NULL, &setLLVMPrintPasses},
+ {"llvm-print-passes", ' ', NULL, "Print the LLVM optimizations to be run", "F", &fLlvmPrintPasses, NULL, NULL},
  {"verify", ' ', NULL, "Run consistency checks during compilation", "N", &fVerify, "CHPL_VERIFY", NULL},
  {"parse-only", ' ', NULL, "Stop compiling after 'parse' pass for syntax checking", "N", &fParseOnly, NULL, NULL},
  {"parser-debug", ' ', NULL, "Set parser debug level", "+", &debugParserLevel, "CHPL_PARSER_DEBUG", NULL},
@@ -1703,7 +1722,9 @@ static ArgumentDescription arg_desc[] = {
 };
 
 static ArgumentState sArgState = {
+  NULL,
   0,
+  NULL,
   0,
   "program",
   "path",
@@ -1835,7 +1856,8 @@ bool useDefaultEnv(std::string key, bool isCrayPrgEnv) {
       key == "CHPL_HOST_SYSTEM_LINK_ARGS" ||
       key == "CHPL_TARGET_BUNDLED_COMPILE_ARGS" ||
       key == "CHPL_TARGET_SYSTEM_COMPILE_ARGS" ||
-      key == "CHPL_TARGET_USE_RUNTIME_LINK_ARGS" ||
+      key == "CHPL_TARGET_USE_STATIC_RUNTIME_LINK_ARGS" ||
+      key == "CHPL_TARGET_USE_SHARED_RUNTIME_LINK_ARGS" ||
       key == "CHPL_TARGET_BUNDLED_RUNTIME_LINK_ARGS" ||
       key == "CHPL_TARGET_BUNDLED_PROGRAM_LINK_ARGS" ||
       key == "CHPL_TARGET_SYSTEM_RUNTIME_LINK_ARGS" ||
@@ -1965,7 +1987,8 @@ static void setChapelEnvs() {
   CHPL_TARGET_BUNDLED_PROGRAM_LINK_ARGS = envMap["CHPL_TARGET_BUNDLED_PROGRAM_LINK_ARGS"];
   CHPL_TARGET_SYSTEM_RUNTIME_LINK_ARGS = envMap["CHPL_TARGET_SYSTEM_RUNTIME_LINK_ARGS"];
   CHPL_TARGET_SYSTEM_PROGRAM_LINK_ARGS = envMap["CHPL_TARGET_SYSTEM_PROGRAM_LINK_ARGS"];
-  CHPL_TARGET_USE_RUNTIME_LINK_ARGS = envMap["CHPL_TARGET_USE_RUNTIME_LINK_ARGS"];
+  CHPL_TARGET_USE_STATIC_RUNTIME_LINK_ARGS = envMap["CHPL_TARGET_USE_STATIC_RUNTIME_LINK_ARGS"];
+  CHPL_TARGET_USE_SHARED_RUNTIME_LINK_ARGS = envMap["CHPL_TARGET_USE_SHARED_RUNTIME_LINK_ARGS"];
 
   if (usingGpuLocaleModel()) {
     CHPL_CUDA_LIBDEVICE_PATH = envMap["CHPL_CUDA_LIBDEVICE_PATH"];
@@ -2116,6 +2139,20 @@ static void checkClientServerLibrary() {
   fLibraryCompile = true;
 }
 
+static void checkNoBuiltinRuntime() {
+  // Runtime is "builtin" to program, nothing to do.
+  if (fBuiltinRuntime) return;
+
+  // Otherwise, we need "CHPL_LIB_PIC=pic".
+  bool isPic = !strcmp(CHPL_LIB_PIC, "pic");
+  if (!isPic) {
+    USR_FATAL("The '--no-builtin-runtime' flag requires position-independent "
+              "code. Rebuild Chapel with 'CHPL_LIB_PIC=pic'");
+  }
+
+  // TODO: Make sure the dynamic library file actually exists?
+}
+
 static void setMaxCIdentLen() {
   bool gotPGI = !strcmp(CHPL_TARGET_COMPILER, "pgi")
              || !strcmp(CHPL_TARGET_COMPILER, "cray-prgenv-pgi");
@@ -2162,6 +2199,7 @@ static void setGPUFlags() {
       fNoStackChecks  = true;
       fNoCastChecks = true;
       fNoDivZeroChecks = true;
+      fNoUnionChecks = true;
     }
     //
     // set up gpuArch
@@ -2188,10 +2226,20 @@ struct VectorLibraryInfo {
     std::string llvmBackendName;
     std::string clangBackendName;
     std::string gccBackendName;
+#if HAVE_LLVM_VER >= 220
+    llvm::VectorLibrary llvmLib;
+    KnownVectorLib(std::string name, std::string llvmBackendName,
+                   std::string clangBackendName, std::string gccBackendName,
+                   llvm::VectorLibrary llvmLib)
+      : name(name), llvmBackendName(llvmBackendName),
+        clangBackendName(clangBackendName), gccBackendName(gccBackendName),
+        llvmLib(llvmLib) {}
+#else
     KnownVectorLib(std::string name, std::string llvmBackendName,
                    std::string clangBackendName, std::string gccBackendName)
       : name(name), llvmBackendName(llvmBackendName),
         clangBackendName(clangBackendName), gccBackendName(gccBackendName) {}
+#endif
     std::string getBackendName() {
       if (0 == strcmp(CHPL_TARGET_COMPILER, "llvm")) {
         return llvmBackendName;
@@ -2205,12 +2253,17 @@ struct VectorLibraryInfo {
     }
   };
 
+#if HAVE_LLVM_VER >= 220
+  static inline const auto libmvec = KnownVectorLib("libmvec", "LIBMVEC", "libmvec", "", llvm::VectorLibrary::LIBMVEC);
+  static inline const auto darwinLibSystemM = KnownVectorLib("darwinLibSystemM", "Darwin_libsystem_m", "Darwin_libsystem_m", "", llvm::VectorLibrary::DarwinLibSystemM);
+#else
 #if HAVE_LLVM_VER < 210
   static inline const auto libmvec = KnownVectorLib("libmvec", "LIBMVEC-X86", "libmvec", "");
 #else
   static inline const auto libmvec = KnownVectorLib("libmvec", "LIBMVEC", "libmvec", "");
 #endif
   static inline const auto darwinLibSystemM = KnownVectorLib("darwinLibSystemM", "Darwin_libsystem_m", "Darwin_libsystem_m", "");
+#endif
 
   static std::optional<KnownVectorLib> getKnownVectorLib(const std::string& vecLib) {
     static std::array<KnownVectorLib, 2> knownVectorLibs = {libmvec, darwinLibSystemM};
@@ -2223,7 +2276,11 @@ struct VectorLibraryInfo {
   }
   static std::optional<std::string> getBackendVectorLibFlag() {
     if (0 == strcmp(CHPL_TARGET_COMPILER, "llvm")) {
+#if HAVE_LLVM_VER >= 220
+      return "DELAYED";
+#else
       return "-vector-library=";
+#endif
     } else if (0 == strcmp(CHPL_TARGET_COMPILER, "clang")) {
       return "-fveclib=";
     } else if (0 == strcmp(CHPL_TARGET_COMPILER, "gnu")) {
@@ -2253,20 +2310,26 @@ static void setVectorLib() {
              fVectorLib.c_str(), flagName.value().c_str(), flagValue.c_str());
   }
 
-
-  if (0 == strcmp(CHPL_TARGET_COMPILER, "llvm")) {
-    if (llvmFlags.length() > 0)
-      llvmFlags += ' ';
-    llvmFlags += flagName.value();
-    llvmFlags += flagValue;
+  if (flagName.value() != "DELAYED") {
+    if (0 == strcmp(CHPL_TARGET_COMPILER, "llvm")) {
+      if (llvmFlags.length() > 0)
+        llvmFlags += ' ';
+      llvmFlags += flagName.value();
+      llvmFlags += flagValue;
+    } else {
+      if (ccflags.length() > 0)
+        ccflags += ' ';
+      ccflags += flagName.value();
+      ccflags += flagValue;
+    }
   } else {
-    if (ccflags.length() > 0)
-      ccflags += ' ';
-    ccflags += flagName.value();
-    ccflags += flagValue;
+#if HAVE_LLVM_VER >= 220
+  if (knownLib.has_value()) {
+    fVectorLibLLVM = knownLib.value().llvmLib;
+  }
+#endif
   }
 }
-
 // Check for inconsistencies in compiler-driver control flags
 static void checkCompilerDriverFlags() {
   if (fDriverDoMonolithic) {
@@ -2417,7 +2480,7 @@ static void checkRuntimeBuilt(void) {
   runtime_dir += "/";
   runtime_dir += CHPL_RUNTIME_SUBDIR;
 
-  if (!isDirectory(runtime_dir.c_str())) {
+  if (!chpl::directoryExists(runtime_dir.c_str())) {
     const char* module_home = getenv("CHPL_MODULE_HOME");
     if (module_home) {
       USR_FATAL("The requested configuration is not included in the module. "
@@ -2444,7 +2507,7 @@ static void checkRuntimeBuilt(void) {
   launcher_dir += CHPL_LAUNCHER_SUBDIR;
 
   if (strcmp(CHPL_LAUNCHER, "none") != 0 &&
-      !isDirectory(launcher_dir.c_str())) {
+      !chpl::directoryExists(launcher_dir.c_str())) {
     USR_FATAL_CONT("There is no CHPL_LAUNCHER=%s for the current configuration.",
                    CHPL_LAUNCHER);
     if (developer) {
@@ -2505,6 +2568,8 @@ static void postprocess_args() {
 
   checkClientServerLibrary();
 
+  checkNoBuiltinRuntime();
+
   checkMacOsxLinkStyle();
 
   checkMultiLocaleLibraryConstraints();
@@ -2562,6 +2627,7 @@ static chpl::CompilerGlobals dynoBuildCompilerGlobals() {
     .nilDerefChecking = !fNoNilChecks,
     .overloadSetsChecking = fOverloadSetsChecks,
     .divByZeroChecking = !fNoDivZeroChecks,
+    .unionAccessChecking = !fNoUnionChecks,
     .cacheRemote = fCacheRemote,
     // We need privatization if we are doing a non-local compilation, or using
     // GPUs
@@ -2641,6 +2707,8 @@ static void dynoConfigureContext(std::string chpl_module_path) {
   auto oldContext = gContext;
   gContext = new chpl::Context(*oldContext, std::move(config));
   delete oldContext;
+
+  gDynoErrorHandler = dynoPrepareAndInstallErrorHandler();
 
   // set up the clang arguments
 #ifdef HAVE_LLVM
@@ -2766,7 +2834,7 @@ int main(int argc, char* argv[]) {
 
     initCompilerGlobals(); // must follow argument parsing
 
-    recordCodeGenStrings(argc, argv);
+    recordCodeGenStrings(&sArgState, argc, argv);
   } // astlocMarker scope
 
   // We print things (--help*, --copyright, etc.) before validating
@@ -2788,6 +2856,15 @@ int main(int argc, char* argv[]) {
   if (!driverInSubInvocation) {
     printStuff(argv[0]);
     validateSettings();
+  }
+
+  if (!driverInSubInvocation) {
+    // only realize errors in the main driver, to avoid duplicates
+    if (dynoRealizeErrors()) USR_STOP();
+  } else {
+    // even if we have errors to show, just clear them. they should have already
+    // been reported in the driver
+    dynoClearErrors();
   }
 
   if (fDynoTimingPath[0] != '\0' &&

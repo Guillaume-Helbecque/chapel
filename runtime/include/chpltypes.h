@@ -179,7 +179,7 @@ typedef int16_t chpl_fn_int_t;    // int type for ftable indexing
 typedef struct _chpl_fn_info {
   const char *name;
   int fileno;
-  int lineno;
+  int32_t lineno;
 } chpl_fn_info;
 
 // It is tempting to #undef true and false and then #define them just to be sure

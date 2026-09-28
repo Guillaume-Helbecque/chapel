@@ -269,7 +269,8 @@ class ResolutionContext {
   }
   template <typename T>
   bool canUseGlobalCacheConsidering(const T* t) const {
-    return canUseGlobalCacheConsidering(*t);
+    if (!isUnstable()) return true;
+    return ResolutionContext::canUseGlobalCache(context_, t);
   }
   template <typename... Ts>
   bool canUseGlobalCacheConsidering(const std::tuple<Ts...>& ts) {

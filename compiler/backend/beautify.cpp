@@ -227,11 +227,8 @@ void beautify(fileinfo* origfile) {
         }
         fprintf(outputfile, ZLINEFORMAT, zlineP, zname);
       }
-    }
-
-    if (cp[strlen(cp)-1] == '\n')
-      new_line = TRUE;
-    else {
+      new_line = cp[strlen(cp)-1] == '\n';
+    } else {
       new_line = FALSE;
     }
 

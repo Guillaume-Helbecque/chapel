@@ -59,6 +59,8 @@ struct ArgumentState
 {
   const char**         file_argument;
   int                  nfile_arguments;
+  const char**         env_argument;
+  int                  nenv_arguments;
 
   const char*          program_name;
   const char*          program_loc;

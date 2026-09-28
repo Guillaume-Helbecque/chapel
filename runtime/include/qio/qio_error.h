@@ -40,7 +40,7 @@ struct qio_err_s {
   // for debugging purposes.
   const char* const_fn;
   const char* const_file;
-  int lineno;
+  int32_t lineno;
 };
 // qioerr is meant to store either an error code directly
 // or a pointer to a struct err_s. There are several ways

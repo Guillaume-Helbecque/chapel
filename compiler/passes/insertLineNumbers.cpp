@@ -151,7 +151,7 @@ Pass::LineAndFile Pass::makeASTLine(CallExpr* call) {
     // TODO: can this just use CHPL_FILE_IDX_COMMAND_LINE_ARG?
     // Make up pretend line numbers for errors with command line
     // configuration variables.
-    Symbol* line = new_IntSymbol(0);
+    Symbol* line = new_IntSymbol(0, INT_SIZE_32);
 
     FnSymbol* fn = call->resolvedFunction();
 
@@ -175,7 +175,7 @@ Pass::LineAndFile Pass::makeASTLine(CallExpr* call) {
 
   } else {
     // Apply the line number from the call AST node
-    Symbol* line = new_IntSymbol(call->linenum());
+    Symbol* line = new_IntSymbol(call->linenum(), INT_SIZE_32);
 
     int filenameIdx = addFilenameTableEntry(call->fname());
 

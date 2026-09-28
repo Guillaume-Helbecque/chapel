@@ -899,6 +899,14 @@ bool canInstantiate(Type* actualType, Type* formalType) {
     return true;
   }
 
+  if (formalType == dtAnyUnion && isUnion(actualType)) {
+    return true;
+  }
+
+  if (formalType == dtAnyProc && isFunctionType(actualType)) {
+    return true;
+  }
+
   if (formalType == dtNumeric &&
       (isIntType(actualType)  ||
        isUIntType(actualType) ||
@@ -1739,7 +1747,8 @@ bool doCanDispatch(Type*     actualType,
                    FnSymbol* fn,
                    bool*     promotes,
                    bool*     paramNarrows,
-                   bool      paramCoerce) {
+                   bool      paramCoerce,
+                   FunctionType* fnType) {
 
   if (actualType == formalType)
     return true;
@@ -1794,18 +1803,31 @@ bool doCanDispatch(Type*     actualType,
     return true;
 
   // check if promotion is possible
-  if (fn                              != NULL        &&
-      fn->name                        != astrSassign &&
-      strcmp(fn->name, "these")       != 0           &&
-      fn->retTag                      != RET_TYPE    &&
-      fn->retTag                      != RET_PARAM   &&
-      actualType->scalarPromotionType != NULL        &&
-      doCanDispatch(actualType->scalarPromotionType, NULL,
+  // Note: Assumes that if `fn` is null and we have a `fnType`, that we're
+  // dealing with a proc ptr. In this case, `=` and `these` cannot be captured
+  // and so do not need to be accounted for.
+  bool badName = fn && (fn->name == astrSassign || strcmp(fn->name, "these") == 0);
+  auto scalar = actualType->isRef() ?
+                  actualType->getValType()->scalarPromotionType :
+                  actualType->scalarPromotionType;
+  bool okReturnIntent = false;
+  if (fn) {
+    okReturnIntent = fn->retTag != RET_TYPE &&
+                     fn->retTag != RET_PARAM;
+  } else if (fnType) {
+    okReturnIntent = fnType->returnIntent() != RET_TYPE &&
+                     fnType->returnIntent() != RET_PARAM;
+  }
+  if (!badName &&
+      okReturnIntent &&
+      scalar != NULL        &&
+      doCanDispatch(scalar, NULL,
                     formalType, formalSym,
                     fn,
                     promotes,
                     paramNarrows,
-                    false)) {
+                    false,
+                    fnType)) {
     *promotes = true;
     return true;
   }
@@ -1822,7 +1844,8 @@ bool canDispatch(Type*     actualType,
                  FnSymbol* fn,
                  bool*     promotes,
                  bool*     paramNarrows,
-                 bool      paramCoerce) {
+                 bool      paramCoerce,
+                 FunctionType* fnType) {
   bool tmpPromotes     = false;
   bool tmpParamNarrows = false;
   bool retval          = doCanDispatch(actualType, actualSym,
@@ -1830,7 +1853,8 @@ bool canDispatch(Type*     actualType,
                                        fn,
                                        &tmpPromotes,
                                        &tmpParamNarrows,
-                                       paramCoerce);
+                                       paramCoerce,
+                                       fnType);
 
   if (promotes     != NULL) {
     *promotes = tmpPromotes;
@@ -2834,7 +2858,6 @@ void resolveDestructor(AggregateType* at) {
 static bool resolveTypeComparisonCall(CallExpr* call);
 static bool resolveBuiltinCastCall(CallExpr* call);
 static bool resolveClassBorrowMethod(CallExpr* call);
-static bool resolveFunctionPointerCall(CallExpr* call);
 static void resolveCoerceCopyMove(CallExpr* call);
 static void resolvePrimInit(CallExpr* call);
 static void resolveInitRef(CallExpr* call);
@@ -2914,7 +2937,7 @@ void resolveCall(CallExpr* call) {
     if (resolveClassBorrowMethod(call))
       return;
 
-    if (resolveFunctionPointerCall(call))
+    if (resolveFunctionPointerCall(call, false))
       return;
 
     if (call->isNamedAstr(astr_coerceCopy)) {
@@ -3355,7 +3378,9 @@ static bool resolveClassBorrowMethod(CallExpr* call) {
 // TODO: Ideally, we would be able to leverage the existing machinery for
 // resolving calls, but we may not be able to do that until dyno is used
 // to resolve code.
-static bool resolveFunctionPointerCall(CallExpr* call) {
+bool resolveFunctionPointerCall(CallExpr* call, bool checkOnly, bool* resolved) {
+  if (resolved) *resolved = false; // set this in case of early return
+
   auto ft = call->isIndirectCall() ? call->functionType() : nullptr;
   if (!ft) return false;
 
@@ -3363,10 +3388,12 @@ static bool resolveFunctionPointerCall(CallExpr* call) {
 
   // TODO: Support default arguments?
   if (call->numActuals() != ft->numFormals()) {
-    USR_FATAL(call, "incorrect number of arguments - expected '%d', "
-                    "but found '%d'",
-                    ft->numFormals(),
-                    call->numActuals());
+    if (!checkOnly) {
+      USR_FATAL(call, "incorrect number of arguments - expected '%d', "
+                      "but found '%d'",
+                      ft->numFormals(),
+                      call->numActuals());
+    }
     return true;
   }
 
@@ -3377,18 +3404,22 @@ static bool resolveFunctionPointerCall(CallExpr* call) {
       auto se = toSymExpr(base);
       const char* name = se ? se->symbol()->name : nullptr;
 
-      if (name) {
-        USR_FATAL_CONT(actual, "calls to function values ('%s' in this "
-                               "case) do not support named arguments yet",
-                               name);
-      } else {
-        USR_FATAL_CONT(actual, "calls to function values do not support "
-                               "named arguments yet");
+      if (!checkOnly) {
+        if (name) {
+          USR_FATAL_CONT(actual, "calls to function values ('%s' in this "
+                                 "case) do not support named arguments yet",
+                                 name);
+        } else {
+          USR_FATAL_CONT(actual, "calls to function values do not support "
+                                 "named arguments yet");
+        }
       }
     }
   }
 
   bool onceForErrorHeader = true;
+
+  bool anyPromotes = false;
 
   // TODO: Can we rework 'ResolutionCandidate' to operate in terms of
   // function types? That might enable us to use that machinery here.
@@ -3408,18 +3439,65 @@ static bool resolveFunctionPointerCall(CallExpr* call) {
     bool ok = canDispatch(actualType, actualSym, formalType, formalSym, fn,
                           &promotes,
                           &paramNarrows,
-                          paramCoerce);
+                          paramCoerce,
+                          ft);
+    anyPromotes = anyPromotes || promotes;
     if (!ok) {
-      if (onceForErrorHeader) {
-        USR_FATAL_CONT(call, "failed to resolve call");
-        onceForErrorHeader = false;
+      if (!checkOnly) {
+        if (onceForErrorHeader) {
+          USR_FATAL_CONT(call, "failed to resolve call");
+          onceForErrorHeader = false;
+        }
+
+        USR_FATAL_CONT(actual, "because actual argument with type '%s' is "
+                               "passed to formal '%s'",
+                               toString(actualType),
+                               toString(formalType));
       }
 
-      USR_FATAL_CONT(actual, "because actual argument with type '%s' is "
-                             "passed to formal '%s'",
-                             toString(actualType),
-                             toString(formalType));
+      return true;
     }
+  }
+
+  if (resolved) *resolved = true;
+
+  if (checkOnly) return true;
+
+  // Instead of refactoring wrapper machinery, create a wrapper for
+  // this particular call and resolve it normally.
+  static int wrapperId = 0;
+  auto name = astr("chpl_fnptr_wrapper_", std::to_string(wrapperId++).c_str());
+  FnSymbol* fn = new FnSymbol(name);
+  fn->addFlag(FLAG_COMPILER_GENERATED);
+  if (ft->throws()) fn->throwsErrorInit();
+  CallExpr* wrappedCall = new CallExpr(call->baseExpr->copy());
+  for (int i = 0; i < ft->numFormals(); i++) {
+    auto formal = ft->formal(i);
+    ArgSymbol* arg = new ArgSymbol(formal->intent(), formal->name(), formal->type());
+    fn->insertFormalAtTail(arg);
+    wrappedCall->insertAtTail(new SymExpr(arg));
+  }
+
+  fn->retType = ft->returnType();
+  fn->retTag = ft->returnIntent();
+  if (ft->returnType() != dtVoid) {
+    fn->body->insertAtTail(new CallExpr(PRIM_RETURN, wrappedCall));
+  } else {
+    fn->body->insertAtTail(wrappedCall);
+  }
+
+  call->getStmtExpr()->insertBefore(new DefExpr(fn));
+  normalize(fn);
+
+  auto old = call->baseExpr;
+  call->baseExpr->replace(new SymExpr(fn));
+  resolveNormalCall(call);
+
+  if (!anyPromotes) {
+    // Then replace the call to the wrapper with the call to the procedure
+    // pointer, so long as there is no promotion.
+    call->baseExpr->replace(old);
+    fn->defPoint->remove();
   }
 
   return true;
@@ -3514,7 +3592,7 @@ struct CandidateSearchState {
   // so that we can revisit them for error reporting. The lists (
   // visible -> most applicable -> candidates) trickle down into the next.
   // All of them only ever grow, with numVisitedVis and numVisitedMA tracking
-  // the point up to which all candiddates have been moved to the successive list
+  // the point up to which all candidates have been moved to the successive list
   // if they needed to be. The flow is as follows:
   //   1. In each potential scope (call and POI(s)), visible functions get
   //      placed into `visibleFns`.
@@ -3537,7 +3615,7 @@ struct CandidateSearchState {
     INT_ASSERT(visInfo.poiDepth == -1); // we have not used it
   }
 
-  bool tryFindVisibileCandidatesForExplicitFn();
+  bool tryFindVisibleCandidatesForExplicitFn();
   void searchOnePoiLevel();
   void skipOnePoiLevel();
   void findVisibleFunctionsAndCandidates();
@@ -4284,7 +4362,7 @@ static FnSymbol* resolveNormalCall(CallInfo& info, check_state_t checkState, Poi
   bool considerNonPoi = (poiMode != PoiSearchMode::POI_ONLY);
   bool considerPoi = (poiMode != PoiSearchMode::NON_POI_ONLY);
 
-  if (searchState.tryFindVisibileCandidatesForExplicitFn()) {
+  if (searchState.tryFindVisibleCandidatesForExplicitFn()) {
     /* the function was explicitly specified via FnSymbol*. Don't search
        for others and don't consider POI */
     poiMode = PoiSearchMode::NON_POI_ONLY;
@@ -4295,7 +4373,7 @@ static FnSymbol* resolveNormalCall(CallInfo& info, check_state_t checkState, Poi
   } else {
     /* At this point, the top-level POI level is the regular scope of the call
        (so it's not really POI). This was configured as part of searchState's
-       constructor. So, this brach is the non-POI candidate search, which
+       constructor. So, this branch is the non-POI candidate search, which
        always happens. */
     searchState.searchOnePoiLevel();
   }
@@ -4330,7 +4408,7 @@ static FnSymbol* resolveNormalCall(CallInfo& info, check_state_t checkState, Poi
   // At this point, we have found no non-POI candidates, neither in the
   // original type nor in any fields it forwards. Time to move on to POI.
   if (considerPoi) {
-    // Ok, no forwaring candidates found without POI. Now move on to
+    // Ok, no forwarding candidates found without POI. Now move on to
     // our POI candidates.
     if (candidates.n == 0 && visInfo.currStart != nullptr && scopeUsed != visInfo.currStart) {
       searchState.findVisibleFunctionsAndCandidates();
@@ -5555,7 +5633,7 @@ void advanceCurrStart(VisibilityInfo& visInfo) {
   visInfo.nextPOI = NULL;
 }
 
-bool CandidateSearchState::tryFindVisibileCandidatesForExplicitFn() {
+bool CandidateSearchState::tryFindVisibleCandidatesForExplicitFn() {
   CallExpr* call = info.call;
   FnSymbol* fn   = call->resolvedFunction();
   Vec<FnSymbol*> visibleFns;
@@ -7648,18 +7726,28 @@ static void captureTaskIntentValues(int        argNum,
 
 // Ensure 'parent' is the block before which we want to do the capturing.
 static void verifyTaskFnCall(BlockStmt* parent, CallExpr* call) {
-  if (call->isNamed("coforall_fn") == true ||
-      call->isNamed("on_fn")       == true) {
+
+  auto isTaskFuncCall = [](CallExpr* call, const char* prefix) {
+    if (SymExpr* base = toSymExpr(call->baseExpr))
+      return startsWith(base->symbol()->name, prefix);
+    else if (UnresolvedSymExpr* base = toUnresolvedSymExpr(call->baseExpr))
+      return startsWith(base->unresolved, prefix);
+    else
+      return false;
+  };
+
+  if (isTaskFuncCall(call, "coforall_fn") ||
+      isTaskFuncCall(call, "on_fn")) {
     INT_ASSERT(parent->isForLoop());
 
-  } else if (call->isNamed("cobegin_fn") == true) {
+  } else if (isTaskFuncCall(call, "cobegin_fn")) {
     DefExpr* first = toDefExpr(parent->getFirstExpr());
 
     // just documenting the current state
     INT_ASSERT(first && !strcmp(first->sym->name, "_cobeginCount"));
 
   } else {
-    INT_ASSERT(call->isNamed("begin_fn"));
+    INT_ASSERT(isTaskFuncCall(call, "begin_fn"));
   }
 }
 
@@ -10079,6 +10167,9 @@ static void resolveNewSetupManaged(CallExpr* newExpr, Type*& manager) {
         if (isRecord(type) && !isManagedPtrType(type))
           USR_FATAL_CONT(newExpr, "Cannot use new %s with record %s",
                                   toString(manager), toString(type));
+        else if (isUnion(type) && !isManagedPtrType(type))
+          USR_FATAL_CONT(newExpr, "Cannot use 'new %s' with union '%s'",
+                                  toString(manager), toString(type));
         else if (!isClassLikeOrManaged(type))
           USR_FATAL_CONT(newExpr, "cannot use management %s on non-class %s",
                                    toString(manager), toString(type));
@@ -10439,7 +10530,7 @@ void ensureEnumTypeResolved(EnumType* etype) {
         }
       }
       if (foundInit) {
-        v++;
+        if (v < INT64_MAX) v++;
         uv++;
       }
     }
@@ -13185,7 +13276,7 @@ initializeClass(Expr* stmt, Symbol* sym) {
           deflt = new SymExpr(defaultTmp);
         }
         stmt->insertBefore(new CallExpr(PRIM_SET_MEMBER, sym, field, deflt));
-      } else if (isRecord(field->type)) {
+      } else if (isRecord(field->type) || isUnion(field->type)) {
         VarSymbol* tmp = newTemp("_init_class_tmp_", field->type);
         stmt->insertBefore(new DefExpr(tmp));
         initializeClass(stmt, tmp);
@@ -13274,6 +13365,33 @@ static void printUnusedFunctions() {
 #endif
 }
 
+static bool shouldProcessForCallGraph(CallExpr* call, FnSymbol* fn) {
+  bool isCallOrFnInUserModule = fn->getModule()->modTag == MOD_USER ||
+                                call->getModule()->modTag == MOD_USER;
+  bool isFnInternal = fn->getModule()->modTag == MOD_INTERNAL;
+  bool isInitCmdLineModulesFn =
+    fn->name == astr("chpl_initProgramCommandLineModules") && isFnInternal;
+
+  if (isInitCmdLineModulesFn ||
+      (isCallOrFnInUserModule && !isFnInternal &&
+       !fn->hasFlag(FLAG_COMPILER_GENERATED) &&
+       !fn->hasFlag(FLAG_COMPILER_NESTED_FUNCTION))) {
+
+    if (!strncmp("chpl_", fn->name, 5) &&
+        !fn->hasFlag(FLAG_MODULE_INIT) &&
+        !isInitCmdLineModulesFn) {
+      // skip any functions that are internal (start with "chpl_")
+      // except for the init function for the module, which needs
+      // to be traversed to find top-level calls in the module
+      return false;
+    }
+
+    return true;
+  }
+
+  return false;
+}
+
 //
 // Print a representation of the call graph of the program.
 // This needs to be done after function resolution so we can follow calls
@@ -13312,20 +13430,7 @@ static void printCallGraph(FnSymbol* startPoint, int indent, std::set<FnSymbol*>
   for_vector(BaseAST, ast, asts) {
     if (CallExpr* call = toCallExpr(ast)) {
       if (FnSymbol* fn = call->resolvedFunction()) {
-        if ((fn->getModule()->modTag == MOD_USER ||
-             call->getModule()->modTag == MOD_USER) &&
-            fn->getModule()->modTag != MOD_INTERNAL &&
-            !fn->hasFlag(FLAG_COMPILER_GENERATED) &&
-            !fn->hasFlag(FLAG_COMPILER_NESTED_FUNCTION)) {
-
-          if (strncmp("chpl_", fn->name, 5) == 0 &&
-              !fn->hasFlag(FLAG_MODULE_INIT)) {
-            // skip any functions that are internal (start with "chpl_")
-            // except for the init function for the module, which needs
-            // to be traversed to find top-level calls in the module
-            continue;
-          }
-
+        if (shouldProcessForCallGraph(call, fn)) {
           FnSymbol* instFn = fn;
           if (FnSymbol* gfn = fn->instantiatedFrom) {
             instFn = gfn;
@@ -14298,7 +14403,7 @@ static void lowerPrimInitNonGenericRecordVar(CallExpr* call,
 
   resolveCallAndCallee(callInit);
 
-  if (isRecord(at) && at->hasPostInitializer()) {
+  if ((isRecord(at) || isUnion(at)) && at->hasPostInitializer()) {
     CallExpr* postinit = new CallExpr("postinit", gMethodToken, val);
     call->insertBefore(postinit);
     resolveCallAndCallee(postinit);
@@ -14549,7 +14654,7 @@ static void lowerPrimInitGenericRecordVar(CallExpr* call,
     USR_PRINT(call, "init resulted in type '%s'", toString(val->type));
   }
 
-  if (at && at->isRecord() && at->hasPostInitializer()) {
+  if (at && (at->isRecord() || at->isUnion()) && at->hasPostInitializer()) {
     CallExpr* postinit = new CallExpr("postinit", gMethodToken, val);
     call->insertBefore(postinit);
     resolveCallAndCallee(postinit);

@@ -153,3 +153,37 @@ remain in the preview until they are deemed sufficiently complete.
   will be inferred as their parent class ``Parent`` instead of producing
   an error. See the note in the :ref:`Implicit_Return_Types` section for
   more details.
+
+- The ``string.contains()`` and ``bytes.contains()`` methods return whether
+  a given pattern is found within the receiver string or bytes value.
+
+- The ``list.find()`` and ``list.contains()`` methods can optionally accept a
+  predicate callable, allowing users to search for elements matching a custom
+  condition rather than only equality comparison.
+
+- The ``FileSystem.listDir()``, ``FileSystem.findFiles()``,
+  and ``FileSystem.walkDirs()`` iterators throw when they encounter an error,
+  rather than just printing the error to stdout.
+
+- Exponentiation operator overloads (``**``) are supported for ``param
+  real/imag/complex`` values taken to ``param real/imag/complex`` or
+  ``param integral`` exponents and considered stable.
+
+- The `Math` module defines a new ``lcm()`` procedure that supports
+  computing least common multiples of integral values.
+
+- Default comparison operators on records (``==``, ``!=``, ``<``,
+  ``<=``, ``>``, ``>=``) are defined as module code accepting two
+  generic arguments of type ``record`` rather than being inserted by
+  the compiler.  These defaults only support comparing two records of
+  matching type.  This change should not result in behavior changes
+  for most programs, unless a record type's only comparison operators
+  are defined using tertiary methods.  In such cases, a default
+  comparison operator will now be available in scopes that do not have
+  access to the tertiary method.
+
+- The ``isFinite()``, ``isInf()``, and ``isNan()`` functions are now defined
+  for ``imag`` values, in addition to ``real`` values.
+
+- The ``Error.stacktrace()`` method has been added to inspect the stack trace
+  of a thrown error.

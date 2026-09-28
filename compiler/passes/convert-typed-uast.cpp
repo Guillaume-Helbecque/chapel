@@ -470,7 +470,7 @@ struct TConverter final : UastConverter,
   std::vector<const uast::Module*> submodulesEncountered;
 
   // Handles for standard/internal modules (these are not global
-  // variables in case we'd like to remove those somewhow later).
+  // variables in case we'd like to remove those somehow later).
   ModuleSymbol* modChapelBase = nullptr;
   ModuleSymbol* modChapelTuple = nullptr;
   ModuleSymbol* modIO = nullptr;
@@ -1098,6 +1098,9 @@ struct TConverter final : UastConverter,
 
   bool enter(const Select* node, RV& rv);
   void exit(const Select* node, RV& rv);
+
+  bool enter(const Match* node, RV& rv);
+  void exit(const Match* node, RV& rv);
 
   bool enter(const Block* node, RV& rv);
   void exit(const Block* node, RV& rv);
@@ -2572,13 +2575,14 @@ struct ConvertTypeHelper {
   Type* visit(const types::AnyNumericType* t) { return dtNumeric; }
   Type* visit(const types::AnyOwnedType* t) { return dtOwned; }
   Type* visit(const types::AnyPodType* t) { return dtAnyPOD; }
+  Type* visit(const types::AnyProcType* t) { return dtAnyProc; }
   Type* visit(const types::AnyRealType* t) { return dtAnyReal; }
   Type* visit(const types::AnyRecordType* t) { return dtAnyRecord; }
   Type* visit(const types::AnySharedType* t) { return dtShared; }
   Type* visit(const types::AnyClassType* t) { return dtAnyManagementNonNilable; }
   Type* visit(const types::AnyUintType t) { return dtIntegral; } // a lie
   Type* visit(const types::AnyUninstantiatedType* t) { return dtUninstantiated; }
-  Type* visit(const types::AnyUnionType* t) { return dtUnknown; } // a lie
+  Type* visit(const types::AnyUnionType* t) { return dtAnyUnion; }
 
   Type* visit(const types::ExternType* t) {
     // Taken from the builder function 'convertTypesToExtern'...
@@ -2667,7 +2671,7 @@ struct ConvertTypeHelper {
         d = addNilableToDecorator(d);
       }
 
-      ret = at->getDecoratedClass(d); // unamanged / borrowed is just the class type at this point
+      ret = at->getDecoratedClass(d); // unmanaged / borrowed is just the class type at this point
     } else {
       // owned/shared should have had a substitution for chpl_t
       INT_ASSERT(!manager->substitutions().empty());
@@ -2806,7 +2810,7 @@ struct ConvertTypeHelper {
 
     cname = "_tuple_";
     name = "";
-    if (isStarTuple) {
+    if (isStarTuple && !args.empty()) {
       TypeSymbol* nameTS = args[0];
       if (omitRef)
         nameTS = nameTS->type->getValType()->symbol;
@@ -2860,7 +2864,7 @@ struct ConvertTypeHelper {
     }
 
     const types::TupleType* ret = t;
-    if (anyChanged) {
+    if (anyChanged && t->numElements() > 0) {
       ret = types::TupleType::getQualifiedTuple(context(), std::move(v));
     }
 
@@ -4156,7 +4160,7 @@ Expr* TConverter::convertPrimCallOrNull(const Call* node, RV& rv) {
     auto re = rv.byAst(primCall->actual(1));
     int64_t idx = re.type().param()->toIntParam()->value();
     types::QualifiedType qtField;
-    ret = codegenGetField(primCall->actual(0), idx-1, rv, &qtField);
+    ret = codegenGetField(primCall->actual(0), idx, rv, &qtField);
     ret = storeInTempIfNeeded(ret, qtField);
   } else {
     ret = new CallExpr(primCall->prim());
@@ -4394,7 +4398,7 @@ Expr* TConverter::codegenGetField(const AstNode* recvAst,
 }
 
 // Gets its own little helper for now in the event that finding the implicit
-// this becomes more compilcated down the road, e.g., for nested functions
+// this becomes more complicated down the road, e.g., for nested functions
 Expr* TConverter::codegenImplicitThis(RV& rv) {
   INT_ASSERT(cur.fnSymbol && cur.fnSymbol->isMethod());
   return new SymExpr(cur.fnSymbol->_this);
@@ -4778,14 +4782,14 @@ Expr* TConverter::convertGroupedAssign(
   //   (Tuple a, b)
   //   (FnCall helper)
   //
-  // and there are associated 'ASSIGN' actions on 'a' and 'b'
+  // and there are associated 'ASSIGN' actions for both 'a' and 'b' on the '='
   auto op = node->toOpCall();
   if (!op || op->op() != USTR("=")) return nullptr;
 
-  auto lhs = op->actual(0)->toTuple();
+  auto lhs = op->lhs()->toTuple();
   if (!lhs) return nullptr;
 
-  auto rhs = op->actual(1);
+  auto rhs = op->rhs();
   INT_ASSERT(rhs->isFnCall());
 
   types::QualifiedType rhsQt;
@@ -4793,7 +4797,10 @@ Expr* TConverter::convertGroupedAssign(
   INT_ASSERT(rhsQt.type()->isTupleType());
   auto rhsSym = storeInTempIfNeeded(rhsExpr, rhsQt);
 
-  for (int i = 0; i < lhs->numActuals(); i++) {
+  int numElts = lhs->numActuals();
+  INT_ASSERT(re->hasAssociatedActions());
+  INT_ASSERT(re->associatedActions().size() == (size_t)numElts);
+  for (int i = 0; i < numElts; i++) {
     auto lhsAst = lhs->actual(i);
     types::QualifiedType lhsQt;
     auto lhsExpr = convertExpr(lhsAst, rv, &lhsQt);
@@ -4804,15 +4811,16 @@ Expr* TConverter::convertGroupedAssign(
                                 new_CStringSymbol(astr("x", istr(i))));
     getElem = storeInTempIfNeeded(getElem, rhsQt.type()->toTupleType()->elementType(i));
 
-    auto re = rv.byAst(lhsAst);
-    INT_ASSERT(re.hasAssociatedActions());
-    INT_ASSERT(re.associatedActions().size() == 1);
-    auto action = re.associatedActions()[0];
+    // Get the corresponding associated action
+    auto action = re->associatedActions()[i];
+    INT_ASSERT(action.tupleEltIdx());
+    INT_ASSERT(*action.tupleEltIdx() == i);
     INT_ASSERT(action.action() == AssociatedAction::ASSIGN);
 
     // Assign it to the LHS element.
     const ResolvedFunction* rf;
-    auto elide = paramElideCallOrNull(action.fn(), re.poiScope(), &rf);
+    auto eltRe = rv.byAst(lhsAst);
+    auto elide = paramElideCallOrNull(action.fn(), eltRe.poiScope(), &rf);
     INT_ASSERT(!elide);
     auto calledFn = findOrConvertFunction(rf);
     CallExpr* ret = new CallExpr(calledFn, lhsExpr, getElem);
@@ -4864,7 +4872,7 @@ Expr* TConverter::convertNamedCallOrNull(const Call* node, RV& rv) {
     actualAsts.insert(actualAsts.begin(), fn->thisFormal());
   }
 
-  // No need to resolve assignment betwen types
+  // No need to resolve assignment between types
   if (ci.name() == USTR("=") &&
       (ci.actual(0).type().isType() || ci.actual(0).type().isParam())) {
     return TC_ELIDED(this, node);
@@ -6522,6 +6530,14 @@ bool TConverter::enter(const Select* node, RV& rv) {
 void TConverter::exit(const Select* node, RV& rv) {
   exitScope(node, rv);
   TC_DEBUGF(this, "exit select %s %s\n", node->id().str().c_str(), asttags::tagToString(node->tag()));
+}
+
+bool TConverter::enter(const Match* node, RV& rv) {
+  TC_UNIMPL("Match statements are not yet supported in the typed converter");
+  return false;
+}
+void TConverter::exit(const Match* node, RV& rv) {
+  TC_UNIMPL("Match statements are not yet supported in the typed converter");
 }
 
 bool TConverter::enter(const Block* node, RV& rv) {

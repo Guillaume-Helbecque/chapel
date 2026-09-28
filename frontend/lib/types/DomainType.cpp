@@ -37,6 +37,18 @@ const ID DomainType::stridesId = ID(UniqueString(), 2, 0);
 const ID DomainType::parSafeId = ID(UniqueString(), 1, 0);
 const ID DomainType::parentDomainId = ID(UniqueString(), 0, 0);
 
+const char* DomainType::kindToString(Kind k) {
+  switch (k) {
+    case Kind::Rectangular: return "Rectangular";
+    case Kind::Associative: return "Associative";
+    case Kind::Sparse: return "Sparse";
+    case Kind::Subdomain: return "Subdomain";
+    case Kind::Unknown: return "Unknown";
+  }
+  CHPL_ASSERT(false && "all domain kinds should be handled");
+  return "";
+}
+
 const RuntimeType* DomainType::runtimeType(Context* context) const {
   // generic domains do not have a runtime type
   if (kind() == DomainType::Kind::Unknown) return nullptr;
@@ -56,16 +68,16 @@ void DomainType::stringify(std::ostream& ss,
     ss << ")";
   } else if (kind_ == Kind::Rectangular) {
     ss << "domain(";
-    rank().param()->stringify(ss, stringKind);
-    ss << ",";
+    CompositeType::stringifyParamSubstitution(ss, rank());
+    ss << ", ";
     idxType().type()->stringify(ss, stringKind);
-    ss << ",";
-    strides().param()->stringify(ss, stringKind);
+    ss << ", ";
+    CompositeType::stringifyParamSubstitution(ss, strides());
     ss << ")";
   } else if (kind_ == Kind::Associative) {
     ss << "domain(";
     idxType().type()->stringify(ss, stringKind);
-    ss << ",";
+    ss << ", ";
     parSafe().param()->stringify(ss, stringKind);
     ss << ")";
   } else if (kind_ == Kind::Unknown) {

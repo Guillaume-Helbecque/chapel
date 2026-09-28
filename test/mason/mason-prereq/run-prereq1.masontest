@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
-set -exo pipefail
+set -eo pipefail
+
+source $(cd $(dirname ${BASH_SOURCE[0]}) ; pwd)/../bash_helpers.bash
 
 cd prereq1
 
-mason build
-mason run
+echo_and_run mason build
+echo_and_run mason run

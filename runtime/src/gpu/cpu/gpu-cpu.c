@@ -27,8 +27,7 @@
 #include "chpl-gpu-impl.h"
 #include "chpl-linefile-support.h"
 #include "chpl-tasks.h"
-#include "error.h"
-#include "chplcgfns.h"
+#include "chpl-error.h"
 
 #include <assert.h>
 #include <stdbool.h>

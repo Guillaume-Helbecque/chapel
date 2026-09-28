@@ -89,11 +89,19 @@ sanitizers. In particular:
 Other Sanitizers
 ----------------
 
-Currently, only AddressSanitizer is regularly tested, but the options passed to
-``CHPL_SANITIZE_EXE`` are passed directly to the backend compiler's
-``-fsanitize=`` option, so other sanitizers can be enabled. For example, to use
-C undefined behavior sanitizer and address sanitizer set
-``CHPL_SANITIZE_EXE=undefined,memory``.
+Currently, only AddressSanitizer and UndefinedBehaviorSanitizer are regularly
+tested, but the options passed to ``CHPL_SANITIZE_EXE`` are passed directly to
+the backend compiler's ``-fsanitize=`` option, so other sanitizers can be
+enabled. For example, to use C undefined behavior sanitizer and address
+sanitizer set ``CHPL_SANITIZE_EXE=undefined,memory``.
+
+.. note::
+
+   ``CHPL_SANITIZE_EXE=undefined`` can result in false positives due to
+   optimizations performed by the Chapel compiler. Specifically,
+   loop invariant code motion (LICM) can result in false positives.
+   If you are using UBSan and seeing what looks like a false positive,
+   try disabling LICM with ``--no-loop-invariant-code-motion``.
 
 
 .. TODO: tsan fails in the runtime: https://github.com/chapel-lang/chapel/issues/27670

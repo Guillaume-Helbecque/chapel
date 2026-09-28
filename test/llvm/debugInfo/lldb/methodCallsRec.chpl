@@ -24,6 +24,9 @@ proc main() {
   breakpoint;
 }
 
+// CHECK: Stop hook #1
+// CHECK-NEXT: Breakpoint [[#BREAKPOINT_START:]]
+
 // CHECK: b methodCallsRec.chpl:8
 // CHECK-NEXT: methodCallsRec`toString
 // CHECK-SAME: methodCallsRec.chpl:8
@@ -34,17 +37,17 @@ proc main() {
 // CHECK-NEXT: methodCallsRec`setter
 // CHECK-SAME: methodCallsRec.chpl:15
 
-// CHECK: stop reason = breakpoint 3
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+2]]
 // CHECK: p this
 // CHECK-NEXT: (_ref(myRec)) 0x{{0*[0-9a-fA-F]+}} (a = 10, b = 3.14
 // CHECK: c
 
-// CHECK: stop reason = breakpoint 4
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+3]]
 // CHECK: p *this
 // CHECK-NEXT: (methodCallsRec::myRec){{.*}}(a = 10, b = 3.14
 // CHECK: c
 
-// CHECK: stop reason = breakpoint 2
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+1]]
 // CHECK: p this->a
 // CHECK-NEXT: (int(64)) 10
 // CHECK: p this.a

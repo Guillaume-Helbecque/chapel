@@ -739,7 +739,7 @@ static void test18internal() {
   assert(vars.at("j").type());
   assert(vars.at("j").type()->isEnumType());
 
-  assert(guard.realizeErrors() == 1);
+  assert(guard.realizeErrors(/*countWarnings*/false) == 1);
 }
 
 // regression test: we used to generate `e : e` formals, which was not valid.
@@ -824,7 +824,7 @@ static void test20() {
 
   std::ostringstream oss;
   vars.at("r").type()->stringify(oss, StringifyKind::CHPL_SYNTAX);
-  assert(oss.str() == "R(green)");
+  assert(oss.str() == "R(colors.green)");
 }
 
 // Non-param cast to string
@@ -1102,7 +1102,7 @@ static void test30() {
 
   std::ostringstream oss;
   vars.at("r").type()->stringify(oss, StringifyKind::CHPL_SYNTAX);
-  assert(oss.str() == "R(green)");
+  assert(oss.str() == "R(colors.green)");
 }
 
 // Param cast bytes to enum

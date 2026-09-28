@@ -31,11 +31,11 @@
 #include "chpl-linefile-support.h"
 #include "chpl-mem.h"
 #include "chpl-mem-desc.h"
+#include "chpl-prginfo.h"
 #include "chpl-topo.h"
-#include "chplcgfns.h"
 #include "chplmemtrack.h"
 #include "chpltypes.h"
-#include "error.h"
+#include "chpl-error.h"
 
 static chpl_bool interleave_mem = false;
 static chpl_bool merge_split_chunks = false;
@@ -604,11 +604,11 @@ static void initializeSharedHeap(void) {
 
   useUpMemNotInHeap();
 
-  // printf("trying to do an allocagion\n");
+  // printf("trying to do an allocation\n");
   // void* p = CHPL_JE_MALLOCX(2 * 1024 * 1024, MALLOCX_NO_FLAGS);
   // printf("got %p\n", p);
 
-  // printf("trying to do an allocagion\n");
+  // printf("trying to do an allocation\n");
   // p = CHPL_JE_MALLOCX(57344, MALLOCX_NO_FLAGS);
   // printf("got %p\n", p);
 }
@@ -617,6 +617,7 @@ void chpl_mem_layerInit(void) {
   void* heap_base;
   size_t heap_size;
 
+  CHPL_RT_PRGINFO_DECLARE(CHPL_RT_PRGINFO_ROOT, CHPL_INTERLEAVE_MEM);
   interleave_mem = chpl_env_rt_get_bool("INTERLEAVE_MEMORY", CHPL_INTERLEAVE_MEM);
   CHPL_JE_LG_ARENA = get_num_arenas()-1;
 

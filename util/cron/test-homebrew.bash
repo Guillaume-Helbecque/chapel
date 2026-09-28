@@ -35,7 +35,6 @@ cd $CHPL_HOME
 short_version=$(get_short_version)
 gen_release $short_version
 
-cp ${CHPL_HOME}/util/packaging/homebrew/chapel-main.rb  ${CHPL_HOME}/util/packaging/homebrew/chapel.rb
 cd ${CHPL_HOME}/util/packaging/homebrew
 
 # Get the tarball from the root tar/ directory and replace the url in chapel.rb with the tarball location
@@ -53,19 +52,38 @@ sha=($(shasum -a 256 $location))
 sha256=${sha[0]}
 log_info $sha256
 
-# create sed command
+# write url and sha256 to chapel.rb for testing
 sed_command="sed -i.bak -e "
 $sed_command "s#url.*#url \"file\:///$location\"#" chapel.rb
 $sed_command "1s/sha256.*/sha256 \"$sha256\"/;t" -e "1,/sha256.*/s//sha256 \"$sha256\"/" chapel.rb
+# drop any revision
+$sed_command "/^[[:space:]]*revision [[:digit:]][[:digit:]]*[[:space:]]*$/d" chapel.rb
 
-${CHPL_HOME}/util/packaging/docker/test/brew_get_bogus_bottles.bash | sed -e '/<bottle-block-placeholder-injected-during-testing>/r /dev/stdin' -e '/<bottle-block-placeholder-injected-during-testing>/d' -i '' chapel.rb
+${CHPL_HOME}/util/packaging/docker/test/brew_get_bogus_bottles.bash |
+  ${CHPL_HOME}/util/packaging/docker/test/brew_replace_bottles.bash chapel.rb
 
 log_info "Chapel formula to be tested:"
 cat chapel.rb
 
 # Test if homebrew install using the chapel formula works.
-HOMEBREW_NO_AUTOREMOVE=1 brew upgrade --force
-HOMEBREW_NO_AUTOREMOVE=1 brew uninstall --force chapel
+
+# update homebrew packages
+# we retry to install in case of either network issues or the error
+# "Error: File exists", this happens somewhat frequently and just
+# rerunning the command seems to fix it.
+RETRIES=10
+until brew upgrade --force --overwrite; do
+  if [ $RETRIES -le 0 ]; then
+    log_error "Failed to update Homebrew after multiple attempts."
+    exit 1
+  fi
+  log_info "Retrying brew update... Attempts left: $RETRIES"
+  RETRIES=$((RETRIES - 1))
+  sleep 5
+done
+
+# uninstall the old chapel so we can do a clean install
+HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall --force chapel
 
 # Remove the cached chapel tar file before running brew install --build-from-source chapel.rb
 rm -f $HOME/Library/Caches/Homebrew/downloads/*--chapel-${short_version}.tar.gz
@@ -75,8 +93,9 @@ cp ./chapel.rb $(brew --repository homebrew/core)/Formula/c/chapel.rb
 # install chapel
 # per the docs, HOMEBREW_NO_INSTALL_FROM_API must be set
 # https://docs.brew.sh/FAQ#can-i-edit-formulae-myself
-HOMEBREW_NO_INSTALL_FROM_API=1 brew install -v --build-from-source chapel \
-  | awk 'tolower($0)~/failed steps? ignored/{r=1} 1; END{exit(r)}'
+HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 \
+  brew install -v --build-from-source --overwrite chapel \
+    | awk 'tolower($0)~/failed steps? ignored/{r=1} 1; END{exit(r)}'
 chpl --version
 
 # Run pidigits and see if it works

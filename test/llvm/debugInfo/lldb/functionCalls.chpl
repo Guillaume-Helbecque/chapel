@@ -46,6 +46,9 @@ proc main() {
   breakpoint;
 }
 
+// CHECK: Stop hook #1
+// CHECK-NEXT: Breakpoint [[#BREAKPOINT_START:]]
+
 // CHECK: b myFunc
 // CHECK-NEXT: functionCalls`myFunc
 // CHECK-SAME: functionCalls.chpl:2
@@ -79,28 +82,28 @@ proc main() {
 // CHECK-NEXT: functionCalls`getMyClass
 // CHECK-SAME: functionCalls.chpl:38
 
-// CHECK: stop reason = breakpoint 2
-// CHECK: stop reason = breakpoint 3
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+1]]
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+2]]
 // CHECK: p ret
 // CHECK: (int(64)) 6
 
-// CHECK: stop reason = breakpoint 4
-// CHECK: stop reason = breakpoint 5
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+3]]
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+4]]
 // CHECK: p ret
 // CHECK: (string) "Hello from getString!"
 
-// CHECK: stop reason = breakpoint 6
-// CHECK: stop reason = breakpoint 7
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+5]]
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+6]]
 // CHECK: p ret
 // CHECK: (functionCalls::myRec)  (a = 10, b = 3.14
 
-// CHECK: stop reason = breakpoint 8
-// CHECK: stop reason = breakpoint 9
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+7]]
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+8]]
 // CHECK: p ret
 // CHECK: (functionCalls::myRec2)  (a = 20, b = 2.71, c = true)
 
-// CHECK: stop reason = breakpoint 10
-// CHECK: stop reason = breakpoint 11
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+9]]
+// CHECK: stop reason = breakpoint [[#BREAKPOINT_START+10]]
 // CHECK: p ret
 // CHECK: (owned MyClass) 0x{{[0-9a-f]+}} {
 // CHECK-NEXT: super

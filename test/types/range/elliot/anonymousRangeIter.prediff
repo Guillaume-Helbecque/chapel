@@ -55,6 +55,3 @@ with open (testOutputFile, 'a') as f:
             break
 
 
-shutil.rmtree(genCodeDir)
-
-

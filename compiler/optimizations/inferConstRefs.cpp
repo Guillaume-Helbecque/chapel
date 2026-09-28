@@ -406,8 +406,10 @@ static bool inferConstRef(Symbol* sym) {
         isConstRef = false;
       }
     }
-    else if (isPassedToRefFormalInIndirectCall(use, call)) {
-      isConstRef = false;
+    else if (call->isIndirectCall()) {
+      if (isPassedToRefFormalInIndirectCall(use, call)) {
+        isConstRef = false;
+      }
     }
     else if (parent && isMoveOrAssign(parent)) {
       if (!canRHSBeConstRef(parent, use)) {
@@ -679,6 +681,14 @@ static bool inferRefToConst(Symbol* sym) {
         info->fnUses = se->symbolSymExprsNext;
 
         CallExpr* call = toCallExpr(se->parentExpr);
+
+        // Used as an indirect call, give up for now until such time as this
+        // becomes relevant for performance.
+        if (call->baseExpr != se) {
+          isRefToConst = false;
+          break;
+        }
+
         if (call->isPrimitive(PRIM_CAST_TO_TYPE)) continue;
         INT_ASSERT(call && call->isResolved());
 
@@ -737,7 +747,7 @@ static bool inferRefToConst(Symbol* sym) {
         }
       }
     }
-    else if (call->isResolved()) {
+    else if (call->isResolved() || call->isIndirectCall()) {
       isRefToConst = true;
     } else if (call->isPrimitive()) {
       isRefToConst = isSafeRefPrimitive(use);

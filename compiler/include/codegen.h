@@ -172,12 +172,7 @@ struct GenInfo {
   // on them back into wide pointers and puts/gets.
   GlobalToWideInfo globalToWideInfo;
 
-  // Optimizations to apply immediately after code-generating a fn
-  // (this one is only set for LLVM_USE_OLD_PASSES)
-  llvm::legacy::FunctionPassManager* FPM_postgen = nullptr;
-
   // Managers to optimize immediately after code-generating a fn
-  // (these ones are used ifndef LLVM_USE_OLD_PASSES)
   llvm::LoopAnalysisManager* LAM = nullptr;
   llvm::FunctionAnalysisManager* FAM = nullptr;
   llvm::CGSCCAnalysisManager* CGAM = nullptr;

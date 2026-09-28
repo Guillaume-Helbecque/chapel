@@ -166,6 +166,8 @@ struct Visitor {
   void checkFunctionReturnsYields(const Function* node);
   void checkForwardingInNonRecordOrClass(const ForwardingDecl* node);
   void checkMainFunctions(const Function* node);
+  void checkUnionElements(const Union* node);
+  bool checkUnionElement(const Variable* var, bool first, bool last);
 
   /*
   TODO
@@ -211,6 +213,7 @@ struct Visitor {
   void visit(const Implements* node);
   void visit(const Import* node);
   void visit(const Local* node);
+  void visit(const Match* node);
   void visit(const Module* node);
   void visit(const OpCall* node);
   void visit(const Return* node);
@@ -1796,6 +1799,7 @@ void Visitor::visit(const FunctionSignature* node) {
 }
 
 void Visitor::visit(const Union* node) {
+  checkUnionElements(node);
   warnUnstableUnions(node);
 }
 
@@ -2091,9 +2095,80 @@ void Visitor::checkMainFunctions(const Function* fn) {
   }
 }
 
+void Visitor::checkUnionElements(const Union* node) {
+  for (auto decl : node->decls()) {
+    if (const Variable* var = decl->toVariable()) {
+      checkUnionElement(var, true, true);
+    } else if (auto multivar = decl->toMultiDecl()) {
+      bool first = true;
+      const Variable* last = NULL;
+      for (auto child : multivar->decls()) {
+        if (const Variable* var = child->toVariable()) {
+          if (checkUnionElement(var, first, false)) {
+            last = var;
+          } else {
+            last = NULL;
+          }
+        }
+        first = false;
+      }
+      // The loop above will skip past cases where type and init are
+      // both NULL since we can't tell whether they're about to
+      // inherit the following field's values or not.  This re-checks
+      // the last declaration to make sure.
+      if (last) {
+        checkUnionElement(last, first, true);
+      }
+    }
+  }
+}
+
+// returns 'true' if OK, 'false' if there's a (known) problem
+//
+// if 'last' is false, we won't generate an error for init+type==NULL
+// cases, since it could be inheriting one that follows...
+  
+bool Visitor::checkUnionElement(const Variable* var, bool first, bool last) {
+  bool retval = false;
+
+  if (var->kind() != Variable::VAR && first) {
+    error(var, "union fields must be 'var'");
+  } else if (var->initExpression()) {
+    error(var, "union fields cannot have initializers");
+  } else if (!var->typeExpression() && last) {
+    error(var, "union fields must have an explicit type");
+  } else {
+    retval = true;
+  }
+  return retval;
+}
+
 void Visitor::visit(const Module* node){
   checkImplicitModuleSameName(node);
   checkModuleNotInModule(node);
+}
+
+void Visitor::visit(const Match* node) {
+  if (shouldEmitUnstableWarning(node)) {
+    // TODO: this should probably be only in the preview edition, its a pretty
+    // big change and unstable is too lightweight imo
+    warn(node, "'union select' statements are a placeholder syntax for a future 'match' statement and are expected to change");
+  }
+  std::unordered_map<UniqueString, const AstNode*> seenCaseExprs;
+  for (auto caseStmt : node->caseStmts()) {
+    if (auto expr = caseStmt->expr()) {
+      if (expr->isErroneousExpression()) continue;
+      // as written today, the parser ensures this
+      auto exprVar = expr->toVariable();
+      CHPL_ASSERT(exprVar);
+      if (auto it = seenCaseExprs.find(exprVar->name());
+          it != seenCaseExprs.end()) {
+        CHPL_REPORT(context_, DuplicateMatchExpr, caseStmt, expr, it->second);
+      } else {
+        seenCaseExprs.insert({exprVar->name(), caseStmt});
+      }
+    }
+  }
 }
 
 void Visitor::visit(const Yield* node) {

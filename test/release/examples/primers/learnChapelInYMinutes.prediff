@@ -48,11 +48,11 @@ good_serial = [ 'Hello, World!',
                 '(10,-1)',
                 '(5, 1.928, -1000.0 + 5.0i)',
                 'true',
-                '(276813856, false, 5678, 1234, false, true)',
+                '(5576, false, 17, 12, false, true)',
                 'All is well',
-		'Continuing to believe reality',
-                '276813856 is even.',
-                '276813856 is divided by 3 with a remainder of 1.',
+                'Continuing to believe reality',
+                '5576 is even.',
+                '5576 is divided by 3 with a remainder of 2.',
                 'Chose \'anOption\'',
                 '500500',
                 '50005000',
@@ -242,16 +242,16 @@ try:
   if serial_time <= 0.0 :
     writeOutput( "FAILED! Section 4 of parallel test: Serial experiment ran for a non-positive amount of time: "+ str( serial_time ) )
     exit( -1-len(test_serial)-9  )
-  
+
   if not test_parallel_parallel.startswith( "Parallel: " ):
     writeOutput( "FAILED! Section 4 of parallel test: Supposed parallel experiment line does not begin with \"Parallel: \": "+ str( test_parallel_parallel ) )
     exit( -1-len(test_serial)-10 )
-   
+
   parallel_time = float( test_parallel_parallel.replace( "Parallel: ", "").strip() )
   if parallel_time <= 0.0 :
     writeOutput( "FAILED! Section 4 of parallel test: Parallel experiment ran for a non-positive amount of time: " + str( parallel_time ) )
     exit( -1-len(test_serial)-11  )
-   
+
 except IndexError:
   writeOutput( "FAILED! Section 4 of parallel test: Missing lines." )
   exit( 1 )
@@ -268,17 +268,17 @@ try:
   if uraniumPreVal != "238":
     writeOutput( "FAILED! Section 5 of parallel test: \"" + uraniumPreVal + "\" not equal to 238" )
     exit( -1-len(test_serial)-12 )
-  
+
   uraniumPostVal = test_parallel.pop(0)
   if uraniumPostVal != "235":
     writeOutput( "FAILED! Section 5 of parallel test: \"" + uraniumPostVal + "\" not equal to 235" )
     exit( -1-len(test_serial)-13 )
-  
+
   uraniumReplace = test_parallel.pop(0)
   if uraniumReplace != "uranium was 235 but is now 239":
     writeOutput( "FAILED! Section 5 of parallel test: \"" + uraniumReplace + "\" not equal to \"uranium was 235 but is now 239\"" )
     exit( -1-len(test_serial)-14 )
-  
+
   uraniumCompareExchange= test_parallel.pop(0)
   if uraniumCompareExchange != "uranium was not equal to 235 so value stays the same...  whatever it was":
     writeOutput( "FAILED! Section 5 of parallel test: \"" + uraniumCompareExchange + "\" not equal to \"uranium was not equal to 235 so value stays the same...  whatever it was\"" )
@@ -327,14 +327,14 @@ except IndexError:
 good_parallel_9 = [ "Task #" + str(i) + " doing work." for i in range(1,5) ]
 
 try:
-  
+
   test_parallel_9 = [ test_parallel.pop(0) for i in range(5) ]
   for value in good_parallel_9:
     count = test_parallel_9.count( value )
     if count != 1:
       writeOutput( "Failed! Section 9 of parallel test: There are exactly " + str( count ) + " occurrences of \"" + str( value ) + "\" expected exactly 1" )
       exit( -1-len(test_serial)-19 )
-  
+
 
 except IndexError:
   writeOutput( "FAILED! Section 9 of parallel test: Missing lines." )
@@ -344,14 +344,13 @@ except IndexError:
 good_parallel_10 = [ "(1666, 678, 9, 678)", "15 72 426 462 507 522 978 986 1664 1666", "15 57 354 354 354 354 456 456 678 678" ]
 
 try:
-  
   test_parallel_10 = [ test_parallel.pop(0) for i in range(3) ]
   for value in good_parallel_10:
     count = test_parallel_10.count( value )
     if count != 1:
       writeOutput( "Failed! Section 10 of parallel test: There are exactly " + str( count ) + " occurrences of \"" + str( value ) + "\" expected exactly 1" )
       exit( -1-len(test_serial)-20 )
-  
+
 
 except IndexError:
   writeOutput( "FAILED! Section 10 of parallel test: Missing lines." )
@@ -362,7 +361,6 @@ if len( test_parallel ) > 0:
   fails = ""
   for l in test_parallel:
     fails += l + "\n"
-    
   writeOutput( "FAILED! Extra lines at end of parallel sections:\n" + fails )
   exit( 1 )
 

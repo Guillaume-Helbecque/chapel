@@ -47,6 +47,13 @@ CLASS_BEGIN(AstNode)
                auto parentId = id.parentSymbolId(context);
                if (parentId.isEmpty()) return nullptr;
                return parsing::idToAst(context, parentId))
+  PLAIN_GETTER(AstNode, parent_module, "Get the parent module of this AST node, possibly skipping intermediate non-module parent symbols",
+               Nilable<const chpl::uast::Module*>,
+
+               auto id = node->id();
+               auto parentId = parsing::idToParentModule(context, id);
+               if (parentId.isEmpty()) return nullptr;
+               return parsing::idToAst(context, parentId)->toModule())
   PLAIN_GETTER(AstNode, pragmas, "Get the pragmas of this AST node",
                std::set<std::string>,
 
@@ -283,6 +290,8 @@ CLASS_BEGIN(Identifier)
                chpl::UniqueString, return node->name())
   PLAIN_GETTER(Identifier, to_node, "Get the AST node that this Identifier node refers to",
                Nilable<const chpl::uast::AstNode*>, return nodeOrNullFromToId(context, node))
+  PLAIN_GETTER(Identifier, refers_to_builtin, "Check if this Identifier refers to a builtin",
+               bool, return nodeRefersToBuiltin(context, node))
 CLASS_END(Identifier)
 
 CLASS_BEGIN(Import)
@@ -511,6 +520,8 @@ CLASS_END(UintLiteral)
 CLASS_BEGIN(StringLikeLiteral)
   PLAIN_GETTER(StringLikeLiteral, value, "Get the value of this StringLikeLiteral node",
                chpl::UniqueString, return node->value())
+  PLAIN_GETTER(StringLikeLiteral, quote_style, "Get the quote style of this StringLikeLiteral node",
+               const char*, return StringLikeLiteral::quoteStyleToString(node->quoteStyle()))
 CLASS_END(StringLikeLiteral)
 
 CLASS_BEGIN(Call)
@@ -649,8 +660,32 @@ CLASS_BEGIN(Function)
                Nilable<const chpl::uast::Decl*>, return node->thisFormal())
   PLAIN_GETTER(Function, throws, "Check if this Function node is marked throws",
                bool, return node->throws())
+  PLAIN_GETTER(Function, throws_location, "Get the Location of this Function node's 'throws' keyword, if any",
+               std::optional<chpl::Location>,
+               auto loc = chpl::parsing::locateThrowsKeywordWithAst(context, node);
+               return getValidLocation(loc))
   PLAIN_GETTER(Function, where_clause, "Get the where clause for this Function node",
                Nilable<const chpl::uast::AstNode*>, return node->whereClause())
+  PLAIN_GETTER(Function, initial_signature, "Compute the initial typed signature of this Function node",
+               std::optional<TypedSignatureObject*>,
+
+               auto rc = chpl::resolution::createDummyRC(context);
+               const chpl::resolution::PoiScope* poiScope = nullptr;
+               if (auto sig = chpl::resolution::typedSignatureInitialForId(&rc, node->id())) {
+                  return TypedSignatureObject::create(contextObject, {sig, poiScope});
+               }
+               return {})
+  PLAIN_GETTER(Function, template_signature, "Compute a template typed signature for this Function node, where each generic formal is assigned a unique PlaceholderType.",
+               std::optional<TypedSignatureObject*>,
+
+               // Dummy RCs are not correct for nested functions.
+               if (!chpl::parsing::idToParentFunctionId(context, node->id()).isEmpty()) return {};
+               auto rc = chpl::resolution::createDummyRC(context);
+               const chpl::resolution::PoiScope* poiScope = nullptr;
+               if (auto sig = chpl::resolution::typedSignatureTemplateForId(&rc, node->id())) {
+                  return TypedSignatureObject::create(contextObject, {sig, poiScope});
+               }
+               return {})
 CLASS_END(Function)
 
 CLASS_BEGIN(Interface)

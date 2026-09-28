@@ -1053,7 +1053,7 @@ FunctionType::Formal FunctionType::constructErrorHandlingFormal() {
 std::array<FunctionType::Formal, 2>
 FunctionType::constructLineFileInfoFormals() {
   std::array<Formal, 2> ret = {{
-    Formal(QUAL_CONST_VAL, dtInt[INT_SIZE_DEFAULT], INTENT_CONST_IN, astr__ln, 0),
+    Formal(QUAL_CONST_VAL, dtInt[INT_SIZE_32], INTENT_CONST_IN, astr__ln, 0),
     Formal(QUAL_CONST_VAL, dtInt[INT_SIZE_32], INTENT_CONST_IN, astr__fn, 0),
   }};
 
@@ -1527,7 +1527,11 @@ const char* FunctionType::toStringMangledForCodegen() const {
     auto f = this->formal(i);
     oss << qualifierMnemonicMangled(f->qual());
     oss << intentTagMnemonicMangled(f->intent());
-    oss << typeToStringMangled(f->type()) << "_";
+    if (f->isGeneric()) {
+      oss << "unknown";
+    } else {
+      oss << typeToStringMangled(f->type()) << "_";
+    }
     if (f->name()) oss << f->name();
     oss << "_";
   }
@@ -1930,6 +1934,9 @@ void initPrimitiveTypes() {
   dtAnyEnumerated = createInternalType ("enum", "enum");
   dtAnyEnumerated->symbol->addFlag(FLAG_GENERIC);
 
+  dtAnyUnion = createInternalType ("union", "union");
+  dtAnyUnion->symbol->addFlag(FLAG_GENERIC);
+
   dtAnyImag = createInternalType("chpl_anyimag", "imag");
   dtAnyImag->symbol->addFlag(FLAG_GENERIC);
 
@@ -1938,6 +1945,9 @@ void initPrimitiveTypes() {
 
   dtAnyPOD = createInternalType ("chpl_anyPOD", "POD");
   dtAnyPOD->symbol->addFlag(FLAG_GENERIC);
+
+  dtAnyProc = createInternalType("chpl_anyProc", "_proc");
+  dtAnyProc->symbol->addFlag(FLAG_GENERIC);
 
   // could also be called dtAnyIntegral
   dtIntegral = createInternalType ("integral", "integral");
@@ -2319,10 +2329,12 @@ bool isBuiltinGenericType(Type* t) {
   return isBuiltinGenericClassType(t) ||
          t == dtAnyComplex || t == dtAnyImag || t == dtAnyReal ||
          t == dtAnyEnumerated ||
+         t == dtAnyUnion ||
          t == dtNumeric || t == dtIntegral ||
          t == dtIteratorRecord || t == dtIteratorClass ||
          t == dtThunkRecord ||
          t == dtAnyPOD ||
+         t == dtAnyProc ||
          t == dtOwned || t == dtShared ||
          t == dtAnyRecord || t == dtTuple ||
          t->symbol->hasFlag(FLAG_SYNC);  // _syncvar
@@ -2359,9 +2371,13 @@ bool isCPtrConstChar(Type* t) {
 }
 
 bool isCVoidPtr(Type* t) {
-  return (t->symbol->hasFlag(FLAG_C_PTR_CLASS) &&
-          getDataClassType(t->symbol)->typeInfo() == dtVoid) ||
-         t == dtCVoidPtr;
+  if (t == dtCVoidPtr) return true;
+  if (t->symbol->hasFlag(FLAG_C_PTR_CLASS)) {
+    if (auto dct = getDataClassType(t->symbol)) {
+      return dct->typeInfo() == dtVoid;
+    }
+  }
+  return false;
 }
 
 bool isClassLikeOrNil(Type* t) {

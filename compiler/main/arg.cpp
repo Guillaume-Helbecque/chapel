@@ -366,7 +366,7 @@ Flag types:
   n = --no-... flag, --no version sets to true
 */
 
-static bool ProcessEnvironment(const ArgumentState* state);
+static bool ProcessEnvironment(ArgumentState* state);
 static void ProcessCommandLine(ArgumentState* state, int argc, char* argv[]);
 
 bool process_args(ArgumentState* state, int argc, char* argv[]) {
@@ -392,7 +392,7 @@ static void ApplyValue(const ArgumentState*       state,
                        const char*                value);
 
 
-static bool ProcessEnvironment(const ArgumentState* state) {
+static bool ProcessEnvironment(ArgumentState* state) {
   ArgumentDescription* desc = state->desc;
   bool hadError = false;
 
@@ -403,7 +403,7 @@ static bool ProcessEnvironment(const ArgumentState* state) {
     {
       const char* env = get_envvar_setting(desc[i]);
 
-      if (env != 0)
+      if (env != NULL)
       {
         char sel = desc[i].type[0];
 
@@ -439,6 +439,14 @@ static bool ProcessEnvironment(const ArgumentState* state) {
             break;
           }
         }
+
+        state->env_argument =
+          (const char **)realloc(state->env_argument,
+                                 sizeof(char*) * (state->nenv_arguments + 3));
+
+        state->env_argument[state->nenv_arguments++] = strdup(desc[i].env);
+        state->env_argument[state->nenv_arguments++] = strdup(env);
+        state->env_argument[state->nenv_arguments]   = NULL;
 
         ApplyValue(state, &desc[i], env);
       }

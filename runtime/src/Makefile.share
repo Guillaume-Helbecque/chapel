@@ -23,10 +23,12 @@ COMMON_LAUNCHER_SRCS = \
 	chpl-string-support.c \
 	chplcast.c \
 	config.c \
-	error.c
+	chpl-error.c
 
 ONLY_LAUNCHER_SRCS = \
-	chpl-launcher-common.c
+	chpl-launcher-common.c \
+	chpl-launcher-shadow-symbols.c \
+	chpl-prginfo-launcher.c
 
 COMMON_NOGEN_SRCS = \
 	$(COMMON_LAUNCHER_SRCS) \
@@ -50,6 +52,7 @@ COMMON_NOGEN_SRCS = \
 	chpl-mem-desc.c \
 	chpl-mem-hook.c \
 	chplmemtrack.c \
+	chpl-prginfo.c \
 	chpl-privatization.c \
 	chpl-dynamic-loading.c \
 	chpl-string.c \
@@ -57,6 +60,7 @@ COMMON_NOGEN_SRCS = \
 	chpl-tasks.c \
 	chpl-tasks-callbacks.c \
 	chpl-timers.c \
+	chpl-unwind.c \
 	chpl-visual-debug.c \
 	debugger.c \
 
@@ -77,6 +81,17 @@ MAIN_LAUNCHER_SRCS = \
 RUNTIME_MALLOC_SRCS = \
 	chpl-mem-replace-malloc.c
 
+STATIC_RUNTIME_ONLY_SRCS = \
+	chplrt-static-build-marker.c
+
+SHARED_RUNTIME_ONLY_SRCS = \
+	chplrt-shared-build-marker.c
+
+STATIC_RUNTIME_ONLY_OBJS = \
+	$(STATIC_RUNTIME_ONLY_SRCS:%.c=$(COMMON_OBJDIR)/%.o)
+
+SHARED_RUNTIME_ONLY_OBJS = \
+	$(SHARED_RUNTIME_ONLY_SRCS:%.c=$(COMMON_OBJDIR)/%.o)
 
 COMMON_OBJS = \
 	$(COMMON_SRCS:%.c=$(COMMON_OBJDIR)/%.o)

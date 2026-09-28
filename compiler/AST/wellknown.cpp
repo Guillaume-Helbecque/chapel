@@ -93,6 +93,7 @@ FnSymbol *gChplUncaughtError;
 FnSymbol *gChplPropagateError;
 FnSymbol *gChplSaveTaskError;
 FnSymbol *gChplForallError;
+FnSymbol *gChplErrorPropagateStackInfo;
 FnSymbol *gAtomicFenceFn;
 FnSymbol *gChplAfterForallFence;
 FnSymbol *gAllocateStringLiteralsBuf;
@@ -588,6 +589,12 @@ static WellKnownFn sWellKnownFns[] = {
   },
 
   {
+    "chpl_error_propagate_stack_info",
+    &gChplErrorPropagateStackInfo,
+    FLAG_UNKNOWN
+  },
+
+  {
     "atomic_fence",
     &gAtomicFenceFn,
     FLAG_UNKNOWN
@@ -711,4 +718,19 @@ void clearGenericWellKnownFunctions()
     if (*wkfn.fn != NULL && (*wkfn.fn)->isGeneric())
       *wkfn.fn = NULL;
   }
+}
+
+Type* chapelTypeForPrimitiveCTypeName(const std::string& name) {
+  // TODO: Automate this mapping, for instance, all the 'c_...' C types
+  //       could automatically have e.g., 'c_opaque_c_char' generated
+  //       for them. Then we have a reliable way to generate 'char' and
+  //       not 'int(8)'.
+  if (name == "char") {
+    return dt_c_char;
+
+  } else if (name == "int") {
+    return dt_c_int;
+  }
+
+  return nullptr;
 }

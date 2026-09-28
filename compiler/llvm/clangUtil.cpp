@@ -91,6 +91,7 @@
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #endif
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/OptimizationLevel.h"
@@ -98,6 +99,10 @@ using LlvmOptimizationLevel = llvm::OptimizationLevel;
 
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
+
+#if HAVE_LLVM_VER >= 220
+#include "llvm/IR/SystemLibraries.h"
+#endif
 
 
 #ifdef HAVE_LLVM_RV
@@ -170,6 +175,10 @@ static void setupModule();
 
 fileinfo    gAllExternCode;
 
+#if HAVE_LLVM_VER >= 220
+llvm::VectorLibrary fVectorLibLLVM = llvm::VectorLibrary::NoLibrary;
+#endif
+
 // forward declare
 class CCodeGenConsumer;
 class CCodeGenAction;
@@ -209,7 +218,11 @@ struct ClangInfo {
   // Once we get to code generation....
   clang::ASTContext *Ctx;
 
+#if LLVM_VERSION_MAJOR >= 22
+  std::unique_ptr<clang::CodeGenerator> cCodeGen;
+#else
   clang::CodeGenerator *cCodeGen;
+#endif
   CCodeGenAction *cCodeGenAction;
 
   // We stash the layout that Clang would like to use here.
@@ -234,6 +247,8 @@ struct ClangInfo {
     std::vector<std::string> clangOtherArgsIn,
     std::vector<std::string> clangLDArgsIn,
     bool parseOnlyIn);
+
+  clang::CodeGenerator* getCodeGenerator();
 };
 
 ClangInfo::ClangInfo(
@@ -262,6 +277,16 @@ ClangInfo::ClangInfo(
          ptrSizeInBits(0),
          wideCharSizeInBits(0)
 {
+}
+
+clang::CodeGenerator* ClangInfo::getCodeGenerator() {
+#if LLVM_VERSION_MAJOR >= 22
+  clang::CodeGenerator* cCodeGen = this->cCodeGen.get();
+#else
+  clang::CodeGenerator* cCodeGen = this->cCodeGen;
+#endif
+  INT_ASSERT(cCodeGen);
+  return cCodeGen;
 }
 
 static
@@ -436,11 +461,7 @@ static astlocT getClangDeclLocation(clang::Decl* d) {
 
 
 
-#if HAVE_LLVM_VER >= 150
 typedef MacroInfo::const_tokens_iterator tokens_iterator;
-#else
-typedef MacroInfo::tokens_iterator tokens_iterator;
-#endif
 
 static const bool debugPrintMacros = false;
 
@@ -1320,6 +1341,7 @@ void readMacrosClang(void) {
   }
 };
 
+
 // This ASTConsumer helps us to:
 // 1: parse code only in certain configurations
 // 2: Convert C code to LLVM IR in others
@@ -1355,27 +1377,33 @@ class CCodeGenConsumer final : public ASTConsumer {
       : ASTConsumer(),
         info(gGenInfo),
         Diags(&info->clangInfo->Clang->getDiagnostics()),
-        Builder(NULL),
+        Builder(nullptr),
         parseOnly(info->clangInfo->parseOnly),
-        savedCtx(NULL)
+        savedCtx(nullptr)
     {
 
       if (!parseOnly) {
-        Builder = CreateLLVMCodeGen(
+        info->clangInfo->cCodeGen = CreateLLVMCodeGen(
           *Diags,
           LLVM_MODULE_NAME,
-#if HAVE_LLVM_VER >= 150
           &info->clangInfo->Clang->getVirtualFileSystem(),
-#endif
           info->clangInfo->Clang->getHeaderSearchOpts(),
           info->clangInfo->Clang->getPreprocessorOpts(),
           info->clangInfo->codegenOptions,
           gContext->llvmContext());
 
-        INT_ASSERT(Builder);
+#if LLVM_VERSION_MAJOR >= 22
+        INT_ASSERT(info->clangInfo->cCodeGen.get());
+#else
+        INT_ASSERT(info->clangInfo->cCodeGen);
+#endif
         INT_ASSERT(!info->module);
-        info->module = Builder->GetModule();
-        info->clangInfo->cCodeGen = Builder;
+        info->module = info->clangInfo->cCodeGen->GetModule();
+#if LLVM_VERSION_MAJOR >= 22
+        Builder = info->clangInfo->cCodeGen.get();
+#else
+        Builder = info->clangInfo->cCodeGen;
+#endif
 
         // compute target triple, data layout
         setupModule();
@@ -1486,7 +1514,7 @@ class CCodeGenConsumer final : public ASTConsumer {
            info->lvt->addGlobalCDecl(*e); // & goes away with newer clang
          }
       } else if(RecordDecl *rd = dyn_cast<RecordDecl>(D)) {
-         const clang::Type *ctype = rd->getTypeForDecl();
+         const clang::Type *ctype = getClangASTType(rd->getASTContext(), rd);
 
          if(ctype != NULL && rd->getDefinition() != NULL) {
            info->lvt->addGlobalCDecl(rd);
@@ -1590,24 +1618,29 @@ CCodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
 };
 
 static void finishClang(ClangInfo* clangInfo){
-  if( clangInfo->cCodeGen ) {
+  if (clangInfo->cCodeGen) {
     // This should call Builder->Release()
     clangInfo->cCodeGen->HandleTranslationUnit(*clangInfo->Ctx);
   }
 }
 
 static void deleteClang(ClangInfo* clangInfo){
-  if( clangInfo->cCodeGen ) {
+  if (clangInfo->cCodeGen) {
+#if LLVM_VERSION_MAJOR >= 22
+    delete clangInfo->cCodeGen.release();
+    clangInfo->cCodeGen = nullptr;
+#else
     delete clangInfo->cCodeGen;
-    clangInfo->cCodeGen = NULL;
+    clangInfo->cCodeGen = nullptr;
+#endif
   }
-  if ( clangInfo->Clang ) {
+  if (clangInfo->Clang) {
     delete clangInfo->Clang;
-    clangInfo->Clang = NULL;
+    clangInfo->Clang = nullptr;
   }
-  if ( clangInfo->cCodeGenAction ) {
+  if (clangInfo->cCodeGenAction) {
     delete clangInfo->cCodeGenAction;
-    clangInfo->cCodeGenAction = NULL;
+    clangInfo->cCodeGenAction = nullptr;
   }
 }
 
@@ -1620,7 +1653,7 @@ static void cleanupClang(ClangInfo* clangInfo)
 // Initialize LLVM targets if needed
 static void initializeLlvmTargets() {
   static bool targetsInited = false;
-  if (targetsInited == false) {
+  if (!targetsInited) {
     llvm::InitializeAllTargets();
     llvm::InitializeAllTargetMCs();
     llvm::InitializeAllAsmPrinters();
@@ -1632,11 +1665,23 @@ static void initializeLlvmTargets() {
 
 // Get a string corresponding to the LLVM target triple
 // for the current configuration
+// TODO: use a different triple when cross compiling
+// TODO: look at CHPL_TARGET_ARCH
+#if LLVM_VERSION_MAJOR >= 22
+static llvm::Triple getConfiguredTargetTriple() {
+  return llvm::Triple(llvm::sys::getDefaultTargetTriple());
+}
+static std::string getConfiguredTargetTripleString() {
+  return getConfiguredTargetTriple().str();
+}
+#else
 static std::string getConfiguredTargetTriple() {
-  // TODO: use a different triple when cross compiling
-  // TODO: look at CHPL_TARGET_ARCH
   return llvm::sys::getDefaultTargetTriple();
 }
+static std::string getConfiguredTargetTripleString() {
+  return getConfiguredTargetTriple();
+}
+#endif
 
 
 void setupClang(GenInfo* info, std::string mainFile)
@@ -1675,7 +1720,7 @@ void setupClang(GenInfo* info, std::string mainFile)
   // target CPU supports vectorization, avx, etc, etc
   // Also important for generating assembly from this program.
   initializeLlvmTargets();
-  std::string triple = getConfiguredTargetTriple();
+  std::string triple = getConfiguredTargetTripleString();
 
   for (auto & arg : clangInfo->driverArgs) {
     clangInfo->driverArgsCStrings.push_back(arg.c_str());
@@ -1787,8 +1832,8 @@ void setupClang(GenInfo* info, std::string mainFile)
   // Get the codegen options from the clang command line.
   clangInfo->codegenOptions = CI->getCodeGenOpts();
 
-  // if --fast is given, we should be at least at -O3.
-  if(fFastFlag && clangInfo->codegenOptions.OptimizationLevel < 3) {
+  // if --optimize is given, we should be at least at -O3.
+  if(optimizeCCode && clangInfo->codegenOptions.OptimizationLevel < 3) {
     clangInfo->codegenOptions.OptimizationLevel = 3;
   }
 
@@ -1816,10 +1861,10 @@ void setupClang(GenInfo* info, std::string mainFile)
   }
 
   // Create the compilers actual diagnostics engine.
-#if LLVM_VERSION_MAJOR >= 20
-  clangInfo->Clang->createDiagnostics(*llvm::vfs::getRealFileSystem());
-#else
+#if LLVM_VERSION_MAJOR < 20 || LLVM_VERSION_MAJOR >= 22
   clangInfo->Clang->createDiagnostics();
+#else
+  clangInfo->Clang->createDiagnostics(*llvm::vfs::getRealFileSystem());
 #endif
   if (!clangInfo->Clang->hasDiagnostics())
     INT_FATAL("Bad diagnostics from clang");
@@ -1942,6 +1987,10 @@ static llvm::TargetOptions getTargetOptions(
           .Case("hard", llvm::FloatABI::Hard)
           .Default(llvm::FloatABI::Default);
 
+#if HAVE_LLVM_VER >= 220
+  Options.VecLib = fVectorLibLLVM;
+#endif
+
 
   // Set the floating point optimization level
   // see also code setting FastMathFlags
@@ -1949,12 +1998,19 @@ static llvm::TargetOptions getTargetOptions(
   if (ffloatOpt == 1) {
     // --no-ieee-float
     // Allow unsafe fast floating point optimization
+#if LLVM_VERSION_MAJOR < 22
+    // NOTE (Jade 3-18-26): its not clear why LLVM removed "UnsafeFPMath", and
+    // what the proper replacement is, if any.
+    // They may have removed it due to it being redundant and so
+    // everything may just work fine
     Options.UnsafeFPMath = 1; // e.g. FSIN instruction
+#endif
     Options.NoInfsFPMath = 1;
     Options.NoNaNsFPMath = 1;
     Options.NoTrappingFPMath = 1;
     Options.NoSignedZerosFPMath = 1;
     Options.AllowFPOpFusion = llvm::FPOpFusion::Fast;
+
   } else if (ffloatOpt == 0) {
     // Target default floating point optimization
     Options.AllowFPOpFusion = llvm::FPOpFusion::Standard;
@@ -2039,13 +2095,9 @@ static llvm::TargetOptions getTargetOptions(
   Options.MCOptions.SplitDwarfFile = CodeGenOpts.SplitDwarfFile;
   Options.MCOptions.MCRelaxAll = CodeGenOpts.RelaxAll;
   Options.MCOptions.MCSaveTempLabels = CodeGenOpts.SaveTempLabels;
-#if HAVE_LLVM_VER >= 150
   Options.MCOptions.MCUseDwarfDirectory =
     CodeGenOpts.NoDwarfDirectoryAsm ? llvm::MCTargetOptions::DisableDwarfDirectory
                                     : llvm::MCTargetOptions::EnableDwarfDirectory;
-#else
-  Options.MCOptions.MCUseDwarfDirectory = !CodeGenOpts.NoDwarfDirectoryAsm;
-#endif
   Options.MCOptions.MCNoExecStack = CodeGenOpts.NoExecStack;
   Options.MCOptions.MCIncrementalLinkerCompatible =
       CodeGenOpts.IncrementalLinkerCompatible;
@@ -2127,7 +2179,11 @@ static void setupModule()
 
   // Set the TargetMachine
   std::string Err;
+#if LLVM_VERSION_MAJOR >= 22
+  const llvm::Target* Target = TargetRegistry::lookupTarget(Triple, Err);
+#else
   const llvm::Target* Target = TargetRegistry::lookupTarget(Triple.str(), Err);
+#endif
   if (!Target)
     USR_FATAL("Could not find LLVM target for %s: %s",
               Triple.str().c_str(), Err.c_str());
@@ -2153,7 +2209,7 @@ static void setupModule()
   // Set up the TargetOptions
   llvm::TargetOptions Options = getTargetOptions(ClangCodeGenOpts, ClangOpts);
 
-  if (!fFastFlag)
+  if (!optimizeCCode)
     Options.EnableFastISel = 1;
   else {
     // things to consider:
@@ -2178,9 +2234,9 @@ static void setupModule()
 
   auto optLevel =
 #if HAVE_LLVM_VER >= 180
-    fFastFlag ? llvm::CodeGenOptLevel::Aggressive : llvm::CodeGenOptLevel::None;
+    optimizeCCode ? llvm::CodeGenOptLevel::Aggressive : llvm::CodeGenOptLevel::None;
 #else
-    fFastFlag ? llvm::CodeGenOpt::Aggressive : llvm::CodeGenOpt::None;
+    optimizeCCode ? llvm::CodeGenOpt::Aggressive : llvm::CodeGenOpt::None;
 #endif
 
   // Create the target machine.
@@ -2339,15 +2395,6 @@ void finishCodegenLLVM() {
   // Codegen extra stuff for global-to-wide optimization.
   setupForGlobalToWide();
 
-  // Finish up our cleanup optimizers...
-  if (info->FPM_postgen) {
-    info->FPM_postgen->doFinalization();
-
-    // We don't need our postgen function pass manager anymore.
-    delete info->FPM_postgen;
-    info->FPM_postgen = nullptr;
-  }
-
   // clean up new pass manager values
   cleanupFunctionOptManagers();
 
@@ -2407,16 +2454,11 @@ void simplifyFunction(llvm::Function* func) {
   // Run per-function optimization / simplification
   // to potentially keep the fn in cache while it is simplified.
   // Big optimizations happen later.
-#ifdef LLVM_USE_OLD_PASSES
-  gGenInfo->FPM_postgen->run(*func);
-#else
   if (gGenInfo->FunctionSimplificationPM) {
     gGenInfo->FunctionSimplificationPM->run(*func, *gGenInfo->FAM);
   }
-#endif
 }
 
-#ifndef LLVM_USE_OLD_PASSES
 // if optLevel is provided, use that; otherwise use the value
 // from clangInfo->codegenOptions.
 static LlvmOptimizationLevel translateOptLevel(int optLevel=-1) {
@@ -2457,74 +2499,7 @@ llvm::PipelineTuningOptions createPipelineOptions(bool forFunctionPasses) {
 
   return PTO;
 }
-#endif
 
-#ifdef LLVM_USE_OLD_PASSES
-// This has code based on clang's EmitAssemblyHelper::CreatePasses
-// in BackendUtil.cpp.
-static
-void configurePMBuilder(PassManagerBuilder &PMBuilder, bool forFunctionPasses, int optLevel=-1) {
-  ClangInfo* clangInfo = gGenInfo->clangInfo;
-  INT_ASSERT(clangInfo);
-  clang::CodeGenOptions &CodeGenOpts = clangInfo->codegenOptions;
-
-  if (optLevel < 0)
-    optLevel = CodeGenOpts.OptimizationLevel;
-
-  if( fFastFlag ) {
-    // TODO -- remove this assert
-    INT_ASSERT(CodeGenOpts.OptimizationLevel >= 2);
-  }
-
-  if (optLevel <= 1) {
-      bool InsertLifetimeIntrinsics = (CodeGenOpts.OptimizationLevel != 0 &&
-                                       !CodeGenOpts.DisableLifetimeMarkers);
-      // TODO: insert lifetime intrinsics if Coroutines are used
-    PMBuilder.Inliner = createAlwaysInlinerLegacyPass(InsertLifetimeIntrinsics);
-  } else {
-    PMBuilder.Inliner = createFunctionInliningPass(
-        CodeGenOpts.OptimizationLevel, CodeGenOpts.OptimizeSize,
-        (!CodeGenOpts.SampleProfileFile.empty() &&
-         CodeGenOpts.PrepareForThinLTO));
-  }
-
-  PMBuilder.OptLevel = optLevel;
-  PMBuilder.SizeLevel = CodeGenOpts.OptimizeSize;
-  PMBuilder.SLPVectorize = CodeGenOpts.VectorizeSLP;
-  PMBuilder.LoopVectorize = CodeGenOpts.VectorizeLoop;
-  PMBuilder.CallGraphProfile = !CodeGenOpts.DisableIntegratedAS;
-
-  PMBuilder.DisableUnrollLoops = !CodeGenOpts.UnrollLoops;
-  PMBuilder.LoopsInterleaved = CodeGenOpts.UnrollLoops;
-  PMBuilder.MergeFunctions = CodeGenOpts.MergeFunctions;
-#if HAVE_LLVM_VER < 150
-  PMBuilder.PrepareForThinLTO = CodeGenOpts.PrepareForThinLTO;
-  PMBuilder.PrepareForLTO = CodeGenOpts.PrepareForLTO;
-#endif
-
-#if HAVE_LLVM_VER < 160
-  PMBuilder.RerollLoops = CodeGenOpts.RerollLoops;
-#endif
-
-#if HAVE_LLVM_VER < 160
-  if (gGenInfo->targetMachine)
-    gGenInfo->targetMachine->adjustPassManager(PMBuilder);
-#endif
-
-  // Enable Region Vectorizer aka Outer Loop Vectorizer
-#ifdef HAVE_LLVM_RV
-  if (fRegionVectorizer && !fNoVectorize && !forFunctionPasses) {
-    // This in copied from 'registerRVPasses'
-    PMBuilder.addExtension(PassManagerBuilder::EP_VectorizerStart,
-                           registerRVPasses);
-  }
-#endif
-
-  // TODO: we might need to call TargetMachine's addEarlyAsPossiblePasses
-}
-#endif
-
-#ifndef LLVM_USE_OLD_PASSES
 
 static void registerDumpIrExtensions(PassBuilder& PB);
 
@@ -2550,6 +2525,8 @@ static PassBuilder constructPassBuilder(
 }
 
 
+// asan only supported in Chapel in LLVM 16+
+#if LLVM_VERSION_MAJOR >= 16
 //
 // Copied from clang/lib/CodeGen/BackendUtil.cpp
 // It's probably not really relevant to Chapel since we don't do GC, but this
@@ -2580,6 +2557,7 @@ static bool asanUseGlobalsGC(const Triple &T, const CodeGenOptions &CGOpts) {
   }
   return false;
 }
+#endif
 
 
 static void runModuleOptPipeline(bool addWideOpts) {
@@ -2636,6 +2614,8 @@ static void runModuleOptPipeline(bool addWideOpts) {
     MPM = PB.buildPerModuleDefaultPipeline(optLvl);
   }
 
+  // asan only supported in Chapel in LLVM 16+
+#if LLVM_VERSION_MAJOR >= 16
   if (strcmp(envMap["CHPL_SANITIZE_EXE"], "address") == 0) {
 
     // if `--no-llvm-wide-opt` add asan
@@ -2668,6 +2648,7 @@ static void runModuleOptPipeline(bool addWideOpts) {
       PB.registerOptimizerLastEPCallback(AsanCallback);
     }
   }
+#endif
 
   // Add the Global to Wide optimization if necessary.
   // This is done in this way to be added even with -O0
@@ -2697,33 +2678,9 @@ static void runModuleOptPipeline(bool addWideOpts) {
   MPM.run(*info->module, MAM);
 }
 
-#endif
-
 void prepareCodegenLLVM()
 {
   GenInfo *info = gGenInfo;
-
-#ifdef LLVM_USE_OLD_PASSES
-  llvm::legacy::FunctionPassManager *fpm = new llvm::legacy::FunctionPassManager(info->module);
-
-  PassManagerBuilder PMBuilder;
-  // Set up the optimizer pipeline.
-  // Add the TransformInfo pass
-  fpm->add(createTargetTransformInfoWrapperPass(
-           info->targetMachine->getTargetIRAnalysis()));
-
-  // Add the TargetLibraryInfo pass
-  Triple TargetTriple(info->module->getTargetTriple());
-  llvm::TargetLibraryInfoImpl TLII(TargetTriple);
-  fpm->add(new TargetLibraryInfoWrapperPass(TLII));
-
-  configurePMBuilder(PMBuilder, /*for function passes*/ true);
-  PMBuilder.populateFunctionPassManager(*fpm);
-
-  // run doInitialization to make sure to update the module's DataLayout
-  // based on the target information.
-  fpm->doInitialization();
-#endif
 
   // Set the floating point optimization level
   // see also code setting targetOptions.UnsafeFPMath etc
@@ -2746,10 +2703,6 @@ void prepareCodegenLLVM()
   setupLLVMCodegenFilenames();
 
   checkAdjustedDataLayout();
-
-#ifdef LLVM_USE_OLD_PASSES
-  info->FPM_postgen = fpm;
-#else
 
   // if using the new optimization pipeline, set up the various
   // AnalysisManagers
@@ -2802,7 +2755,6 @@ void prepareCodegenLLVM()
       llvm::errs() << "Function Simplification Pipeline: '" << Pipeline << "'\n";
     }
   }
-#endif
 }
 
 static void handleErrorLLVM(void* user_data, const char* reason,
@@ -2852,7 +2804,7 @@ static bool isTargetCpuValid(const char* targetCpu) {
     return true;
   } else {
     initializeLlvmTargets();
-    std::string triple = getConfiguredTargetTriple();
+    auto triple = getConfiguredTargetTriple();
     std::string err;
     const llvm::Target* tgt = llvm::TargetRegistry::lookupTarget(triple, err);
     if (tgt == nullptr || !err.empty()) {
@@ -3009,7 +2961,7 @@ static void helpComputeClangArgs(std::string& clangCC,
   }
 
   // add a -iquote. so we can find headers named on command line in same dir
-  // using iquote over I to prevent accidently overriding system headers
+  // using iquote over I to prevent accidentally overriding system headers
   clangCCArgs.push_back("-iquote.");
 
   // add a -I for the generated code directory
@@ -3020,14 +2972,12 @@ static void helpComputeClangArgs(std::string& clangCC,
     clangCCArgs.push_back(clangRequiredWarningFlags[i]);
   }
 
-#if HAVE_LLVM_VER >= 150
   if (usingGpuLocaleModel() &&
       getGpuCodegenType() == GpuCodegenType::GPU_CG_NVIDIA_CUDA) {
     // this is necessary for CUB 11. Once we drop CUDA 11 support, we can
     // probably remove this
     clangCCArgs.push_back("-Wno-deprecated-builtins");
   }
-#endif
 
 #if HAVE_LLVM_VER >= 210
   if (usingGpuLocaleModel() &&
@@ -3037,6 +2987,17 @@ static void helpComputeClangArgs(std::string& clangCC,
     // the rocm docs do not mention the deprecation and I can't find proper docs
     // for the new API that the warning refers to
     clangCCArgs.push_back("-Wno-deprecated-declarations");
+  }
+#endif
+
+#if HAVE_LLVM_VER >= 220
+  if (usingGpuLocaleModel()) {
+    // silence warnings about gcc compat with clang 22
+    // these come from applying the format attribute to non-variadic functions,
+    // which clang allows but gcc does not. we never compiler GPU code with gcc,
+    // so this is fine
+    clangCCArgs.push_back("-Wno-gcc-compat");
+    clangCCArgs.push_back("-DUSE_FORMAT_ATTR_FOR_NON_VARIADIC");
   }
 #endif
 
@@ -3067,7 +3028,7 @@ static void helpComputeClangArgs(std::string& clangCC,
     if (!targetCpuValid) {
       USR_WARN("Unknown target CPU %s -- not specializing",
                CHPL_LLVM_TARGET_CPU);
-      std::string triple = getConfiguredTargetTriple();
+      std::string triple = getConfiguredTargetTripleString();
       USR_PRINT("To see available CPU types, run "
                 "%s --target=%s --print-supported-cpus",
                 clangCC.c_str(), triple.c_str());
@@ -3483,14 +3444,12 @@ llvm::Type* getTypeLLVM(const char* name)
   return NULL;
 }
 // should support TypedefDecl,EnumDecl,RecordDecl
-llvm::Type* codegenCType(const TypeDecl* td)
-{
+llvm::Type* codegenCType(const TypeDecl* td) {
   GenInfo* info = gGenInfo;
   INT_ASSERT(info);
   ClangInfo* clangInfo = info->clangInfo;
   INT_ASSERT(clangInfo);
-  clang::CodeGenerator* cCodeGen = clangInfo->cCodeGen;
-  INT_ASSERT(cCodeGen);
+  clang::CodeGenerator* cCodeGen = clangInfo->getCodeGenerator();
 
   QualType qType;
 
@@ -3503,9 +3462,13 @@ llvm::Type* codegenCType(const TypeDecl* td)
     RecordDecl *def = rd->getDefinition();
     if (def == nullptr) {
       // it's an opaque type - definition of fields not available
-      qType=rd->getCanonicalDecl()->getTypeForDecl()->getCanonicalTypeInternal();
+      qType
+        = getClangASTType(rd->getASTContext(),
+                          rd->getCanonicalDecl())->getCanonicalTypeInternal();
     } else {
-      qType=def->getCanonicalDecl()->getTypeForDecl()->getCanonicalTypeInternal();
+      qType
+        = getClangASTType(def->getASTContext(),
+                          def->getCanonicalDecl())->getCanonicalTypeInternal();
     }
   } else {
     INT_FATAL("Unknown clang type declaration");
@@ -3513,27 +3476,23 @@ llvm::Type* codegenCType(const TypeDecl* td)
   return clang::CodeGen::convertTypeForMemory(cCodeGen->CGM(), qType);
 }
 
-llvm::Type* codegenCType(const clang::QualType& qType)
-{
+llvm::Type* codegenCType(const clang::QualType& qType) {
   GenInfo* info = gGenInfo;
   INT_ASSERT(info);
   ClangInfo* clangInfo = info->clangInfo;
   INT_ASSERT(clangInfo);
-  clang::CodeGenerator* cCodeGen = clangInfo->cCodeGen;
-  INT_ASSERT(cCodeGen);
+  clang::CodeGenerator* cCodeGen = clangInfo->getCodeGenerator();
 
   return clang::CodeGen::convertTypeForMemory(cCodeGen->CGM(), qType);
 }
 
 // should support FunctionDecl,VarDecl,EnumConstantDecl
-GenRet codegenCValue(const ValueDecl *vd)
-{
+GenRet codegenCValue(const ValueDecl *vd) {
   GenInfo* info = gGenInfo;
   INT_ASSERT(info);
   ClangInfo* clangInfo = info->clangInfo;
   INT_ASSERT(clangInfo);
-  clang::CodeGenerator* cCodeGen = clangInfo->cCodeGen;
-  INT_ASSERT(cCodeGen);
+  clang::CodeGenerator* cCodeGen = clangInfo->getCodeGenerator();
 
   GenRet ret;
 
@@ -3803,7 +3762,9 @@ llvm::Type *LayeredValueTable::getType(StringRef name, bool *isUnsigned) {
 
       // Convert it to an LLVM type.
       store->u.type = codegenCType(store->u.cTypeDecl);
-      const clang::Type *type = store->u.cTypeDecl->getTypeForDecl();
+      const clang::Type *type =
+        getClangASTType(store->u.cTypeDecl->getASTContext(),
+                        store->u.cTypeDecl);
       if (type != NULL) {
         store->isUnsigned = type->isUnsignedIntegerOrEnumerationType();
       }
@@ -3923,14 +3884,12 @@ void LayeredValueTable::swap(LayeredValueTable* other)
 }
 
 int getCRecordMemberGEP(const char* typeName, const char* fieldName,
-                        bool& isCArrayField)
-{
+                        bool& isCArrayField) {
   GenInfo* info = gGenInfo;
   INT_ASSERT(info);
   ClangInfo* clangInfo = info->clangInfo;
   INT_ASSERT(clangInfo);
-  clang::CodeGenerator* cCodeGen = clangInfo->cCodeGen;
-  INT_ASSERT(cCodeGen);
+  clang::CodeGenerator* cCodeGen = clangInfo->getCodeGenerator();
 
   TypeDecl* d = NULL;
   int ret;
@@ -4028,15 +3987,26 @@ static clang::CanQualType getClangType(::Type* t, bool makeRef) {
   if (cCastedToType)
     USR_FATAL(t, "Cannot use macro with type cast in export function argument");
 
-  if (cTypeDecl == NULL)
+  clang::CanQualType ret;
+
+  if (cTypeDecl) {
+    auto cQualType = Ctx->getTypeDeclType(cTypeDecl);
+    ret = cQualType->getCanonicalTypeUnqualified();
+
+  } else if (t->symbol->hasFlag(FLAG_OPAQUE_C_TYPE_ALIAS)) {
+    if (::Type* t = chapelTypeForPrimitiveCTypeName(cname)) {
+      ret = getClangType(t, makeRef);
+    } else {
+      INT_FATAL(t->symbol, "Unhandled type alias when fetching Clang type");
+    }
+
+  } else {
     USR_FATAL(t, "Could not find C type %s - "
                   "extern/export functions should only use extern types",
                    cname);
+  }
 
-  clang::QualType cQualType = Ctx->getTypeDeclType(cTypeDecl);
-  clang::CanQualType cTy = cQualType->getCanonicalTypeUnqualified();
-
-  return cTy;
+  return ret;
 }
 
 static clang::CanQualType
@@ -4056,14 +4026,12 @@ static clang::CanQualType getClangFormalType(ArgSymbol* formal) {
   return getClangFormalType(formal->intent, formal->type, isReceiver);
 }
 
-const clang::CodeGen::CGFunctionInfo& getClangABIInfoFD(clang::FunctionDecl* FD)
-{
+const clang::CodeGen::CGFunctionInfo& getClangABIInfoFD(clang::FunctionDecl* FD) {
   GenInfo* info = gGenInfo;
   INT_ASSERT(info);
   ClangInfo* clangInfo = info->clangInfo;
   INT_ASSERT(clangInfo);
-  clang::CodeGenerator* cCodeGen = clangInfo->cCodeGen;
-  INT_ASSERT(cCodeGen);
+  clang::CodeGenerator* cCodeGen = clangInfo->getCodeGenerator();
   clang::CodeGen::CodeGenModule& CGM = cCodeGen->CGM();
 
   clang::CanQualType FTy = FD->getType()->getCanonicalTypeUnqualified();
@@ -4081,9 +4049,10 @@ const clang::CodeGen::CGFunctionInfo& getClangABIInfoFD(clang::FunctionDecl* FD)
 
 const clang::CodeGen::CGFunctionInfo& getClangABIInfo(::FunctionType* ft) {
   auto info = gGenInfo;
+  INT_ASSERT(info);
   auto clangInfo = info->clangInfo;
-  auto cCodeGen = clangInfo->cCodeGen;
-  INT_ASSERT(info && clangInfo && cCodeGen);
+  INT_ASSERT(clangInfo);
+  clang::CodeGenerator* cCodeGen = clangInfo->getCodeGenerator();
   auto& CGM = cCodeGen->CGM();
 
   // Otherwise, we should call arrangeFreeFunctionCall
@@ -4124,8 +4093,7 @@ const clang::CodeGen::CGFunctionInfo& getClangABIInfo(FnSymbol* fn) {
   INT_ASSERT(info);
   ClangInfo* clangInfo = info->clangInfo;
   INT_ASSERT(clangInfo);
-  clang::CodeGenerator* cCodeGen = clangInfo->cCodeGen;
-  INT_ASSERT(cCodeGen);
+  clang::CodeGenerator* cCodeGen = clangInfo->getCodeGenerator();
   clang::CodeGen::CodeGenModule& CGM = cCodeGen->CGM();
 
   // Lookup the clang AST for this function so we can
@@ -4239,14 +4207,12 @@ bool useDarwinArmFix(::Type* type) {
 // TODO: Update `getClangABIInfo` to handle formal types and return types that
 // are not extern types.
 //
-const clang::CodeGen::ABIArgInfo*
-getSingleCGArgInfo(::Type* type) {
+const clang::CodeGen::ABIArgInfo* getSingleCGArgInfo(::Type* type) {
   GenInfo* info = gGenInfo;
   INT_ASSERT(info);
   ClangInfo* clangInfo = info->clangInfo;
   INT_ASSERT(clangInfo);
-  clang::CodeGenerator* cCodeGen = clangInfo->cCodeGen;
-  INT_ASSERT(cCodeGen);
+  clang::CodeGenerator* cCodeGen = clangInfo->getCodeGenerator();
   clang::CodeGen::CodeGenModule& CGM = cCodeGen->CGM();
 
   llvm::SmallVector<clang::CanQualType,4> argTypesC;
@@ -4283,20 +4249,30 @@ int getCTypeAlignment(::Type* type) {
   gGenInfo->lvt->getCDecl(type->symbol->cname, &cType, &cVal);
   const clang::TypeDecl* td = cType;
 
-  // find the QualType
   QualType qType;
-  if (const TypedefNameDecl* tnd = dyn_cast<TypedefNameDecl>(td)) {
-    qType = tnd->getCanonicalDecl()->getUnderlyingType();
-  } else if (const EnumDecl* ed = dyn_cast<EnumDecl>(td)) {
-    qType = ed->getCanonicalDecl()->getIntegerType();
-  } else if (const RecordDecl* rd = dyn_cast<RecordDecl>(td)) {
-    RecordDecl *def = rd->getDefinition();
-    if (def == nullptr)
-      // ex. opaque pointer in test/extern/records/OpaqueStructNoField.chpl
-      return ALIGNMENT_DEFER;
-    qType=def->getCanonicalDecl()->getTypeForDecl()->getCanonicalTypeInternal();
+
+  if (td) {
+    if (const TypedefNameDecl* tnd = dyn_cast<TypedefNameDecl>(td)) {
+      qType = tnd->getCanonicalDecl()->getUnderlyingType();
+    } else if (const EnumDecl* ed = dyn_cast<EnumDecl>(td)) {
+      qType = ed->getCanonicalDecl()->getIntegerType();
+    } else if (const RecordDecl* rd = dyn_cast<RecordDecl>(td)) {
+      RecordDecl *def = rd->getDefinition();
+      if (def == nullptr)
+        // ex. opaque pointer in test/extern/records/OpaqueStructNoField.chpl
+        return ALIGNMENT_DEFER;
+      qType =
+        getClangASTType(def->getASTContext(),
+                        def->getCanonicalDecl())->getCanonicalTypeInternal();
+    } else {
+      INT_FATAL(type, "Unhandled Clang type declaration");
+    }
+  } else if (type->symbol->hasFlag(FLAG_OPAQUE_C_TYPE_ALIAS)) {
+    auto eqt = chapelTypeForPrimitiveCTypeName(type->symbol->cname);
+    INT_ASSERT(eqt);
+    return getCTypeAlignment(eqt);
   } else {
-    INT_FATAL("Unknown clang type declaration");
+    INT_FATAL(type, "Chapel type does not have a corresponding Clang type");
   }
 
   return getCTypeAlignment(qType);
@@ -4348,7 +4324,6 @@ bool isBuiltinExternCFunction(const char* cname)
   else return false;
 }
 
-#ifndef LLVM_USE_OLD_PASSES
 static void addDumpIr(ModulePassManager& MPM,
                       LlvmOptimizationLevel v,
                       llvmStageNum::llvmStageNum_t stage) {
@@ -4446,98 +4421,6 @@ static void registerDumpIrExtensions(PassBuilder& PB) {
   }
 }
 
-#else
-
-static
-void addAggregateGlobalOps(const PassManagerBuilder &Builder,
-    llvm::legacy::PassManagerBase &PM) {
-  GenInfo* info = gGenInfo;
-  if( fLLVMWideOpt ) {
-    auto globalSpace = info->globalToWideInfo.globalSpace;
-    PM.add(createLegacyAggregateGlobalOpsOptPass(globalSpace));
-  }
-}
-
-static
-void addGlobalToWide(const PassManagerBuilder &Builder,
-    llvm::legacy::PassManagerBase &PM) {
-  GenInfo* info = gGenInfo;
-  if( fLLVMWideOpt ) {
-    PM.add(createLegacyGlobalToWidePass(&info->globalToWideInfo,
-                                        info->clangInfo->asmTargetLayoutStr));
-  }
-}
-
-static
-bool getIrDumpExtensionPoint(llvmStageNum_t s,
-    PassManagerBuilder::ExtensionPointTy & dumpIrPoint)
-{
-  switch (s) {
-    case llvmStageNum::EarlyAsPossible:
-      dumpIrPoint = PassManagerBuilder::EP_EarlyAsPossible;
-      return true;
-    case llvmStageNum::ModuleOptimizerEarly:
-      dumpIrPoint = PassManagerBuilder::EP_ModuleOptimizerEarly;
-      return true;
-    case llvmStageNum::LateLoopOptimizer:
-      if (llvmPrintIrStageNum != llvmStageNum::EVERY) {
-        USR_FATAL("Cannot use llvm-print-ir-stage late-loop-optimizer "
-                      "with the old pass manager\n");
-      }
-      return false;
-    case llvmStageNum::LoopOptimizerEnd:
-      dumpIrPoint = PassManagerBuilder::EP_LoopOptimizerEnd;
-      return true;
-    case llvmStageNum::ScalarOptimizerLate:
-      dumpIrPoint = PassManagerBuilder::EP_ScalarOptimizerLate;
-      return true;
-    case llvmStageNum::EarlySimplification:
-      if (llvmPrintIrStageNum != llvmStageNum::EVERY) {
-        USR_FATAL("Cannot use llvm-print-ir-stage early-simplification "
-                      "with the old pass manager\n");
-      }
-      return false;
-    case llvmStageNum::OptimizerEarly:
-      if (llvmPrintIrStageNum != llvmStageNum::EVERY) {
-        USR_FATAL("Cannot use llvm-print-ir-stage optimizer-early "
-                      "with the old pass manager\n");
-      }
-      return false;
-    case llvmStageNum::OptimizerLast:
-      dumpIrPoint = PassManagerBuilder::EP_OptimizerLast;
-      return true;
-    case llvmStageNum::CGSCCOptimizerLate:
-      dumpIrPoint = PassManagerBuilder::EP_CGSCCOptimizerLate;
-      return true;
-    case llvmStageNum::VectorizerStart:
-      dumpIrPoint = PassManagerBuilder::EP_VectorizerStart;
-      return true;
-    case llvmStageNum::EnabledOnOptLevel0:
-      dumpIrPoint = PassManagerBuilder::EP_EnabledOnOptLevel0;
-      return true;
-    case llvmStageNum::Peephole:
-      dumpIrPoint = PassManagerBuilder::EP_Peephole;
-      return true;
-    case llvmStageNum::NOPRINT:
-    case llvmStageNum::NONE:
-    case llvmStageNum::BASIC:
-    case llvmStageNum::FULL:
-    case llvmStageNum::EVERY:
-    case llvmStageNum::ASM:
-    case llvmStageNum::LAST:
-      return false;
-  }
-
-  return false;
-}
-
-static
-void addDumpIrPass(const PassManagerBuilder &Builder,
-    llvm::legacy::PassManagerBase &PM) {
-  PM.add(createLegacyDumpIrPass(llvmPrintIrStageNum));
-}
-#endif
-
 static void linkBitCodeFile(const char *bitCodeFilePath) {
   GenInfo* info = gGenInfo;
 
@@ -4598,9 +4481,16 @@ static void linkGpuDeviceLibraries() {
       externals.insert(f.getGUID());
     }
   }
-  for (const auto& g: info->module->globals()) {
+  std::vector<llvm::GlobalValue*> preservedGlobals;
+  for (auto& g: info->module->globals()) {
     if (g.hasExternalLinkage()) {
       externals.insert(g.getGUID());
+      // keep track of Chapel-emitted external globals like `chpl_nodeID`
+      // that might not have device-side uses.
+      // We need to explicitly preserve them
+      if (!g.isDeclaration()) {
+        preservedGlobals.push_back(&g);
+      }
     }
   }
 
@@ -4641,6 +4531,10 @@ static void linkGpuDeviceLibraries() {
     return externals.count(gv.getGUID()) > 0;
   });
   iPass.internalizeModule(*info->module);
+
+  if (!preservedGlobals.empty()) {
+    llvm::appendToCompilerUsed(*info->module, preservedGlobals);
+  }
 }
 
 // If we're using the LLVM wide optimizations, we have to add
@@ -4841,7 +4735,7 @@ static std::string findSiblingClangToolPath(std::string_view toolName) {
     if (!parent.empty()) {
       SmallString<128> path;
       sys::path::append(path, parent, toolName);
-      if (pathExists(path.str())) {
+      if (chpl::pathExists(path.str())) {
         return std::string(path);
       }
     }
@@ -4904,7 +4798,7 @@ static void makeBinaryLLVMForCUDA(const std::string& artifactFilename,
     // produces code with debugging directives incompatible
     // with -O3, so then strip those directives.
 
-    ptxasFlags = fFastFlag ? "-O3" : "-O0";
+    ptxasFlags = optimizeCCode ? "-O3" : "-O0";
     if (fDebugSymbols) ptxasFlags += " -lineinfo";
 
     // Kind of a hack; manually turn
@@ -4913,7 +4807,7 @@ static void makeBinaryLLVMForCUDA(const std::string& artifactFilename,
     //   .target sm_60
     // because we can't configure clang to not force
     // full debug info.
-    if (fDebugSymbols && fFastFlag) {
+    if (fDebugSymbols && optimizeCCode) {
       stripPtxDebugDirective(artifactFilename);
     }
   }
@@ -4938,10 +4832,10 @@ static void makeBinaryLLVMForCUDA(const std::string& artifactFilename,
   std::string profiles;
   for (auto& gpuArch : gpuArches) {
     // Figure out the corresponding compute capability and object name
-    if (strncmp(gpuArch.c_str(), "sm_", 3) != 0 || gpuArch.size() != 5) {
+    if (strncmp(gpuArch.c_str(), "sm_", 3) != 0 || gpuArch.size() < 4) {
       USR_FATAL("Unrecognized CUDA arch");
     }
-    std::string computeCap = std::string("compute_") + gpuArch[3] + gpuArch[4];
+    std::string sm = gpuArch.substr(3);
     std::string gpuObject = gpuObjectFilenamePrefix + "_" + gpuArch + ".o";
 
     // Execute the assembler for this architecture
@@ -4952,11 +4846,10 @@ static void makeBinaryLLVMForCUDA(const std::string& artifactFilename,
                          " " + artifactFilename.c_str();
     mysystem(ptxCmd.c_str(), "PTX to object file");
 
-    // Track the new object we created and the CC we enabled.
-    profiles += std::string(" --image=profile=") + computeCap +
-                ",file=" + artifactFilename;
-    profiles += std::string(" --image=profile=") + gpuArch +
-                ",file=" + gpuObject;
+    profiles += std::string(" --image3=kind=ptx,sm=") + sm +
+                  ",file=" + artifactFilename;
+    profiles += std::string(" --image3=kind=elf,sm=") + sm +
+                  ",file=" + gpuObject;
   }
 
   std::string fatbinaryCmd = std::string("fatbinary -64 ") +
@@ -4978,13 +4871,8 @@ static void makeBinaryLLVMForHIP(const std::string& artifactFilename,
   INT_ASSERT(gpuArches.size() == 1);
 
   std::string targets = "-targets=host-x86_64-unknown-linux-unknown";
-#if HAVE_LLVM_VER >= 150
   std::string inputs = "-input=/dev/null ";
   std::string outputs = "-output=" + fatbinFilename;
-#else
-  std::string inputs = "-inputs=/dev/null";
-  std::string outputs = "-outputs=" + fatbinFilename;
-#endif
   std::string lldBin = CHPL_ROCM_LLVM_PATH + std::string("/bin/lld");
   for (auto& gpuArch : gpuArches) {
     std::string gpuObject = gpuObjFilename + "_" + gpuArch + ".o";
@@ -5009,11 +4897,7 @@ static void makeBinaryLLVMForHIP(const std::string& artifactFilename,
     mysystem(lldCmd.c_str(), "Device .o file to .out file");
 
     targets += std::string(",hipv4-amdgcn-amd-amdhsa--") + gpuArch;
-#if HAVE_LLVM_VER >= 150
     inputs += "-input=" + gpuOut + " ";
-#else
-    inputs += "," + gpuOut;
-#endif
 
   }
   std::string bundlerCmd = findSiblingClangToolPath("clang-offload-bundler") +
@@ -5168,8 +5052,21 @@ void makeBinaryLLVM(void) {
     //
 
     if (fBuiltinRuntime) {
-      splitStringWhitespace(CHPL_TARGET_USE_RUNTIME_LINK_ARGS,
+      // We are embedding a copy of the runtime, so link against 'libchpl.a'.
+      splitStringWhitespace(CHPL_TARGET_USE_STATIC_RUNTIME_LINK_ARGS,
                             clangLDArgs);
+    } else {
+      // Even without a builtin runtime, we still need to pass in the
+      // shared library containing the runtime so that the linker will
+      // not complain about undefined symbols. This can happen on OSX.
+      //
+      // Link against 'libchpl.so'/'libchpl.dylib':
+      splitStringWhitespace(CHPL_TARGET_USE_SHARED_RUNTIME_LINK_ARGS,
+                            clangLDArgs);
+    }
+
+    if (fBuiltinRuntime) {
+      // If embedding, we need to also link against runtime dependencies.
       splitStringWhitespace(CHPL_TARGET_BUNDLED_RUNTIME_LINK_ARGS,
                             clangLDArgs);
     }
@@ -5177,6 +5074,7 @@ void makeBinaryLLVM(void) {
     splitStringWhitespace(CHPL_TARGET_BUNDLED_PROGRAM_LINK_ARGS, clangLDArgs);
 
     if (fBuiltinRuntime) {
+      // If embedding, we need to also link against runtime dependencies.
       splitStringWhitespace(CHPL_TARGET_SYSTEM_RUNTIME_LINK_ARGS,
                             clangLDArgs);
     }
@@ -5485,114 +5383,6 @@ static void llvmRunOptimizations(void) {
   }
 #endif
 
-  // Run optimizations, either with the old pass manager or with
-  // the new one.
-
-#ifdef LLVM_USE_OLD_PASSES
-  static bool addedGlobalExts = false;
-  if( ! addedGlobalExts ) {
-    // Add IR dumping pass if necessary
-    // point is initialized to a dummy value; it is set
-    // in getIrDumpExtensionPoint.
-    PassManagerBuilder::ExtensionPointTy point =
-                  PassManagerBuilder::EP_EarlyAsPossible;
-
-    if (getIrDumpExtensionPoint(llvmPrintIrStageNum, point)) {
-      printf("Adding IR dump extension at %i\n", point);
-      PassManagerBuilder::addGlobalExtension(point, addDumpIrPass);
-    }
-
-    if (llvmPrintIrStageNum == llvmStageNum::EVERY) {
-      printf("; Adding IR dump extensions for all phases\n");
-      for (int i = 0; i < llvmStageNum::LAST; i++) {
-        llvmStageNum::llvmStageNum_t stage = (llvmStageNum::llvmStageNum_t) i;
-        if (getIrDumpExtensionPoint(stage, point))
-          PassManagerBuilder::addGlobalExtension(
-              point,
-              [stage] (const PassManagerBuilder &Builder,
-                       llvm::legacy::PassManagerBase &PM) -> void {
-                PM.add(createLegacyDumpIrPass(stage));
-              });
-      }
-
-      // Put the print-stage-num back
-      llvmPrintIrStageNum = llvmStageNum::EVERY;
-    }
-
-    addedGlobalExts = true;
-  }
-
-  // Create PassManager and run optimizations
-  PassManagerBuilder PMBuilder;
-
-  configurePMBuilder(PMBuilder, /* for function passes */ false);
-
-  // Note, these global extensions currently only apply
-  // to the module-level optimization (not the "basic" function
-  // optimization we do immediately after generating LLVM IR).
-
-  // Add the Global to Wide optimization if necessary.
-  if (fLLVMWideOpt) {
-    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast, addAggregateGlobalOps);
-    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast, addGlobalToWide);
-    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0, addGlobalToWide);
-  }
-
-  // Setup for and run LLVM optimization passes
-  {
-    adjustLayoutForGlobalToWide();
-
-    llvm::legacy::PassManager mpm;
-    llvm::legacy::PassManager mpm2;
-
-    // Add the TransformInfo pass
-    mpm.add(createTargetTransformInfoWrapperPass(
-            info->targetMachine->getTargetIRAnalysis()));
-    mpm2.add(createTargetTransformInfoWrapperPass(
-             info->targetMachine->getTargetIRAnalysis()));
-
-    // Add the TargetLibraryInfo pass
-    Triple TargetTriple(info->module->getTargetTriple());
-    llvm::TargetLibraryInfoImpl TLII(TargetTriple);
-    mpm.add(new TargetLibraryInfoWrapperPass(TLII));
-    mpm2.add(new TargetLibraryInfoWrapperPass(TLII));
-
-    PMBuilder.populateModulePassManager(mpm);
-
-    // Run the optimizations now!
-    mpm.run(*info->module);
-
-    saveIrToBcFileIfNeeded(
-        filenames->opt1Filename,
-        /* forceSave */ !fDriverDoMonolithic && !fLLVMWideOpt);
-
-    if (fLLVMWideOpt) {
-      // the GlobalToWide pass creates calls to inline functions, among
-      // other things, that will need to be optimized. So run an additional
-      // battery of optimizations now.
-
-      PassManagerBuilder PMBuilder2;
-
-      configurePMBuilder(PMBuilder2, false, /* opt level */ 1);
-      // Should we disable vectorization since we did that?
-      // Or run select few cleanup passes?
-      // Inlining is definitely important here..
-
-      PMBuilder2.populateModulePassManager(mpm2);
-
-      // Reset the data layout.
-      info->module->setDataLayout(clangInfo->asmTargetLayoutStr);
-
-      // Run the optimizations now!
-      mpm2.run(*info->module);
-
-      saveIrToBcFileIfNeeded(filenames->opt2Filename,
-                             /* forceSave */ !fDriverDoMonolithic);
-    }
-  }
-
-#else
-
   // Run optimizations with the new PassManager
   runModuleOptPipeline(fLLVMWideOpt);
   saveIrToBcFileIfNeeded(filenames->opt1Filename,
@@ -5607,8 +5397,6 @@ static void llvmRunOptimizations(void) {
     saveIrToBcFileIfNeeded(filenames->opt2Filename,
                            /* forceSave */ !fDriverDoMonolithic);
   }
-
-#endif
 
   // Handle --llvm-print-ir-stage=full
 #ifdef HAVE_LLVM

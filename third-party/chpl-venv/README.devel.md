@@ -9,8 +9,8 @@ Python packages required by the developer tool `chplspell`.
 The primary package required by `chplspell` is `scspell3k`.
 
 The primary developer packages required by `chpl-language-server` (CLS) are
-`pytest` and `pytest-lsp`.  The general packages requires by CLS are mentioned
-in README.md.
+`pytest`, `pytest-lsp`, and `pytest-xdist`.
+The general packages requires by CLS are mentioned in README.md.
 
 
 ### scspell3k
@@ -42,3 +42,13 @@ Required for testing CLS.
 **License**: MIT
 
 **Website**: https://pypi.org/project/pytest-lsp/
+
+### pytest-xdist
+
+A pytest plugin for running tests in parallel.
+
+Required for testing CLS.
+
+**License**: MIT
+
+**Website**: https://pypi.org/project/pytest-xdist/

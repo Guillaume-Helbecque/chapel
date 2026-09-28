@@ -166,10 +166,12 @@ std::error_code writeFile(const char* path, const std::string& data) {
 }
 
 
-bool fileExists(const char* path) {
-  struct stat s;
-  int err = stat(path, &s);
-  return err == 0;
+bool pathExists(std::string_view path){
+  return llvm::sys::fs::exists(path);
+}
+
+bool directoryExists(std::string_view path) {
+  return llvm::sys::fs::is_directory(path);
 }
 
 std::error_code deleteDir(const llvm::Twine& dirname) {
@@ -418,35 +420,13 @@ llvm::ErrorOr<HashFileResult> hashFile(const llvm::Twine& path) {
 
   fclose(fp);
 
-  // In LLVM 15, SHA256::final returns a std::array.
-  // In LLVM 14 an earlier, it returns a StringRef.
-#if LLVM_VERSION_MAJOR >= 15
   return hasher.final();
-#else
-  HashFileResult result;
-  llvm::StringRef s = hasher.final();
-  CHPL_ASSERT(s.size() == sizeof(HashFileResult));
-  memcpy(&result, s.data(), sizeof(HashFileResult));
-  return result;
-#endif
 }
 
 HashFileResult hashString(llvm::StringRef data) {
   llvm::SHA256 hasher;
-
   hasher.update(data);
-
-  // In LLVM 15, SHA256::final returns a std::array.
-  // In LLVM 14 an earlier, it returns a StringRef.
-#if LLVM_VERSION_MAJOR >= 15
   return hasher.final();
-#else
-  HashFileResult result;
-  llvm::StringRef s = hasher.final();
-  CHPL_ASSERT(s.size() == sizeof(HashFileResult));
-  memcpy(&result, s.data(), sizeof(HashFileResult));
-  return result;
-#endif
 }
 
 std::error_code copyModificationTime(const llvm::Twine& srcPath,

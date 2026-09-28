@@ -1,4 +1,4 @@
-
+# shellcheck shell=sh
 
 __get_docker_tag() {
   local os=$1
@@ -31,11 +31,11 @@ __docker_image_from_os() {
     "amzn2023")
     docker_image_base="amazonlinux:2023"
     ;;
-    "fc42")
-    docker_image_base="fedora:42"
-    ;;
     "fc43")
     docker_image_base="fedora:43"
+    ;;
+    "fc44")
+    docker_image_base="fedora:44"
     ;;
     "el10")
     docker_image_base="almalinux:10"
@@ -51,6 +51,9 @@ __docker_image_from_os() {
     ;;
     "ubuntu24")
     docker_image_base="ubuntu:24.04"
+    ;;
+    "ubuntu26")
+    docker_image_base="ubuntu:26.04"
     ;;
     *)
     docker_image_base="unknown"
@@ -253,7 +256,7 @@ __run_container() {
 }
 
 __test_package() {
-  python3 $CHPL_HOME/util/packaging/common/test_package.py $@
+  python3 $CHPL_HOME/util/packaging/common/test_package.py "$@"
 }
 __test_all_packages() {
   for deb in $(set +e && find $CHPL_HOME/util/packaging/apt/build -name '*.deb'); do

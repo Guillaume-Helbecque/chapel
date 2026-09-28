@@ -39,6 +39,8 @@ SYS_MODULES_DIR=standard/gen/$(CHPL_MAKE_SYS_MODULES_SUBDIR)
 SYS_CTYPES_MODULE_DOC=standard/ChapelSysCTypes.chpl
 SYS_CTYPES_MODULE=$(SYS_MODULES_DIR)/ChapelSysCTypes.chpl
 
+SET_PROGRAM_DATA_MODULE=$(CHPL_MAKE_HOME)/modules/internal/gen/ChapelSetProgramInfoDataEntries.chpl
+
 MODULE_SPHINX=${CHPL_MAKE_HOME}/modules/sphinx
 DOC_BUILD=${CHPL_MAKE_HOME}/build/doc
 DOC_RST=${CHPL_MAKE_HOME}/doc/rst
@@ -46,7 +48,7 @@ COPY_IF_DIFFERENT = $(CHPL_MAKE_PYTHON) $(CHPL_MAKE_HOME)/util/config/update-if-
 
 default: all
 
-all: $(SYS_CTYPES_MODULE)
+all: $(SYS_CTYPES_MODULE) $(SET_PROGRAM_DATA_MODULE)
 	$(TAGS_COMMAND)
 
 clean: FORCE
@@ -75,6 +77,14 @@ $(SYS_CTYPES_MODULE): $(MAKE_SYS_BASIC_TYPES)
 $(SYS_CTYPES_MODULE_DOC): $(MAKE_SYS_BASIC_TYPES)
 	mkdir -p $(@D)
 	cd $(@D) && $(MAKE_SYS_BASIC_TYPES_CMD) --doc $(@F)
+
+MAKE_PROGRAM_DATA_SCRIPT=$(CHPL_MAKE_HOME)/util/config/gen-set-program-data-module.cpp
+MAKE_PROGRAM_DATA_HEADER=$(CHPL_MAKE_HOME)/runtime/include/chpl-prginfo-data-macro.h
+COMPILELINE=$(CHPL_MAKE_HOME)/util/config/compileline
+
+$(SET_PROGRAM_DATA_MODULE): $(MAKE_PROGRAM_DATA_SCRIPT) $(MAKE_PROGRAM_DATA_HEADER)
+	mkdir -p $(@D)
+	cd $(@D) && `$(COMPILELINE) --compile-c++` $< && (./a.out $(@F); rm a.out)
 
 MODULES_TO_DOCUMENT = \
 	standard/Allocators.chpl \
@@ -128,7 +138,6 @@ PACKAGES_TO_DOCUMENT = \
 	packages/Collection.chpl \
 	packages/ConcurrentMap.chpl \
 	packages/CopyAggregation.chpl \
-	packages/Crypto.chpl \
 	packages/Curl.chpl \
 	packages/DistributedBag.chpl \
 	packages/DistributedDeque.chpl \
@@ -194,7 +203,7 @@ DISTS_TO_DOCUMENT = \
 # live in a path named 'modules/internal/' so that they don't get
 # indexed like the user-facing modules.
 #
-INTERNAL_MODULES_TO_DOCUMENT =                        \
+INTERNAL_MODULES_TO_DOCUMENT =                          \
 	$(CHPL_MAKE_HOME)/modules/internal/Atomics.chpl       \
 	$(CHPL_MAKE_HOME)/modules/internal/Bytes.chpl         \
 	$(CHPL_MAKE_HOME)/modules/internal/ChapelArray.chpl   \
@@ -203,9 +212,10 @@ INTERNAL_MODULES_TO_DOCUMENT =                        \
 	$(CHPL_MAKE_HOME)/modules/internal/ChapelRange.chpl   \
 	$(CHPL_MAKE_HOME)/modules/internal/ChapelSyncvar.chpl \
 	$(CHPL_MAKE_HOME)/modules/internal/ChapelTuple.chpl   \
+	$(CHPL_MAKE_HOME)/modules/internal/ChapelUnion.chpl   \
 	$(CHPL_MAKE_HOME)/modules/internal/OwnedObject.chpl   \
 	$(CHPL_MAKE_HOME)/modules/internal/SharedObject.chpl  \
-	$(CHPL_MAKE_HOME)/modules/internal/String.chpl        \
+	$(CHPL_MAKE_HOME)/modules/internal/String.chpl
 
 
 documentation: $(SYS_CTYPES_MODULE_DOC)

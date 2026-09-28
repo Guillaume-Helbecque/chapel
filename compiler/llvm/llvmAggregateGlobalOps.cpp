@@ -269,11 +269,7 @@ struct MemOpRanges { // from MemsetRanges in MemCpyOptimizer
 
     addRange(OffsetFromFirst, StoreSize, Slack,
              SI->getPointerOperand(),
-#if HAVE_LLVM_VER >= 150
              SI->getAlign().value(),
-#else
-             SI->getAlignment(),
-#endif
              SI);
   }
   // CUSTOM because MemsetRanges doesn't work with LoadInsts.
@@ -283,11 +279,7 @@ struct MemOpRanges { // from MemsetRanges in MemCpyOptimizer
 
     addRange(OffsetFromFirst, LoadSize, Slack,
              LI->getPointerOperand(),
-#if HAVE_LLVM_VER >= 150
              LI->getAlign().value(),
-#else
-             LI->getAlignment(),
-#endif
              LI);
   }
   // CUSTOM adds Slack

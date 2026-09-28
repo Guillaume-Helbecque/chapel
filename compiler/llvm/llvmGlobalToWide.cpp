@@ -282,14 +282,9 @@ namespace {
     trackLLVMValue(ptr);
 
     Constant* undef = UndefValue::get(widePtrType);
-#if HAVE_LLVM_VER >= 150
     IRBuilder<> irBuilder(insertBefore);
     Value* undefLocPtr = irBuilder.CreateExtractValue(undef, wideAddrGEP);
     trackLLVMValue(undefLocPtr);
-#else
-    Constant* undefLocPtr = ConstantExpr::getExtractValue(undef,
-                                                          wideAddrGEP);
-#endif
     // get the local address space pointer.
     Value* cast = CastInst::CreatePointerCast(ptr, undefLocPtr->getType(),
                                               "", getInsertPosition(insertBefore));
@@ -2153,18 +2148,9 @@ void populateFunctionsForGlobalType(Module *module, GlobalToWideInfo* info, Type
   assert(info->localeIdType);
   assert(info->nodeIdType);
 
-  GlobalPointerInfo & r = info->gTypes[globalPtrTy];
+  GlobalPointerInfo& r = info->gTypes[globalPtrTy];
 
-  if (isOpaquePointer(globalPtrTy)) {
-    ptrTy = getPointerType(module->getContext());
-  } else {
-#ifdef HAVE_LLVM_TYPED_POINTERS
-    ptrTy = getPointerType(globalPtrTy->getPointerElementType());
-#else
-    assert(false && "Should not be reachable");
-#endif
-  }
-
+  ptrTy = getPointerType(module->getContext());
   locTy = info->localeIdType;
   nodeTy = info->nodeIdType;
 
@@ -2318,16 +2304,7 @@ Type* createWidePointerToType(Module* module, GlobalToWideInfo* i, Type* eltTy)
   // Get the wide pointer struct containing {locale, address}
   Type* fields[2];
   fields[0] = i->localeIdType;
-  llvm::Type* ptrTy = nullptr;
-  if (eltTy) {
-#ifdef HAVE_LLVM_TYPED_POINTERS
-    ptrTy = getPointerType(eltTy);
-#else
-    assert(false && "Should not be reachable");
-#endif
-  } else {
-    ptrTy = getPointerType(context);
-  }
+  llvm::Type* ptrTy = getPointerType(context);
   assert(ptrTy);
   fields[1] = ptrTy;
 
@@ -2413,29 +2390,12 @@ Type* convertTypeGlobalToWide(Module* module, GlobalToWideInfo* info, Type* t)
   }
 
   if (t->isPointerTy()) {
-    if (isOpaquePointer(t)) {
-      if (t->getPointerAddressSpace() == info->globalSpace ||
-          t->getPointerAddressSpace() == info->wideSpace) {
-          // Replace the pointer with a struct containing {locale, address}
-          return createWidePointerToType(module, info, nullptr);
-      } else {
-          return getPointerType(context, t->getPointerAddressSpace());
-      }
+    if (t->getPointerAddressSpace() == info->globalSpace ||
+        t->getPointerAddressSpace() == info->wideSpace) {
+        // Replace the pointer with a struct containing {locale, address}
+        return createWidePointerToType(module, info, nullptr);
     } else {
-#ifdef HAVE_LLVM_TYPED_POINTERS
-      Type* eltType = t->getPointerElementType();
-      assert(t != t->getPointerElementType());  // detect simple recursion
-      Type* wideEltType = convertTypeGlobalToWide(module, info, eltType);
-      if (t->getPointerAddressSpace() == info->globalSpace ||
-          t->getPointerAddressSpace() == info->wideSpace) {
-          // Replace the pointer with a struct containing {locale, address}
-          return createWidePointerToType(module, info, wideEltType);
-      } else {
-          return getPointerType(wideEltType, t->getPointerAddressSpace());
-      }
-#else
-      assert(false && "Should not be reachable");
-#endif
+        return getPointerType(context, t->getPointerAddressSpace());
     }
   }
 
