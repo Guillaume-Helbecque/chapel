@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2021-2026 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -53,13 +53,6 @@ void setClangFlags(Context* context, std::vector<std::string> clangFlags);
 
 /** Initialize all LLVM targets */
 void initializeLlvmTargets();
-
-#ifdef HAVE_LLVM
-/** Wrapper for CreateAndPopulateDiagOpts to support LLVM 11.
-    This can be removed after the minimum LLVM version is > 13. */
-std::unique_ptr<clang::DiagnosticOptions>
-wrapCreateAndPopulateDiagOpts(llvm::ArrayRef<const char *> Argv);
-#endif
 
 /** Given arguments to 'clang', convert them into arguments for 'cc1'.
     The first element of 'arg' should be which clang to use (like argv[0]). */

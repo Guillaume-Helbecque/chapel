@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -18,92 +18,108 @@
  * limitations under the License.
  */
 
-// TODO: Can we make tests out of the code blocks? We'd need to be able to
-// add a 'precomp' and 'compopts'.
-//
-
 /*
-  Support for dynamic loading in Chapel.
+Support for dynamic loading in Chapel.
 
-  .. note::
+.. note::
 
-    To ``use`` this module, the experimental procedure pointer feature
-    must be activated. Do this by setting the ``config param`` named
-    ``useProcedurePointers`` to ``true``.
+  As of the 2.9 release, prototypical support has been added for loading
+  and executing code from Chapel programs at runtime. See the section
+  :ref:`Loading_Chapel_Programs_at_Runtime` below.
 
-  This module provides the ability to load a binary at runtime. Procedures
-  contained in a dynamically loaded binary can be retrieved and called on
-  any locale without compile-time knowledge of their names or locations.
+This module provides the ability to load a binary at runtime. Procedures
+contained in a dynamically loaded binary can be retrieved and called on
+any locale without compile-time knowledge of their names or locations.
 
-  A hypothetical C binary could contain a procedure named ``foo``:
+A hypothetical C binary could contain a procedure named ``foo``:
 
-  .. code-block:: c
+.. literalinclude:: ../../../../test/library/packages/DynamicLoading/doc-examples/TestBinary.c
+   :language: c
+   :start-after: START_EXAMPLE
+   :end-before: STOP_EXAMPLE
 
-    // Compile with: 'cc -shared -fPIC -o TestBinary TestBinary.c'
-    //
-    // Your C compiler must support compiling a shared library as well
-    // as generating "position independent code". If your compiler
-    // offers some other way of preserving symbol tables (e.g., the
-    // '-rdynamic' flag) for use with dynamic loading, you can compile
-    // a regular executable with that flag as well.
-    //
+This binary can be can be loaded in Chapel at runtime as follows:
 
-    #include <stdio.h>
+.. literalinclude:: ../../../../test/library/packages/DynamicLoading/doc-examples/ModuleDocTest.chpl
+   :language: chapel
+   :start-after: START_EXAMPLE_0
+   :end-before: STOP_EXAMPLE_0
 
-    void foo(void);
-    void foo(void) {
-      printf("Hello world from %s!\n", __FUNCTION__);
-    }
+And a procedure named ``foo`` with type ``proc(): void`` can be retrieved:
 
-    int main(void) {
-      foo();
-      return 0;
-    }
+.. literalinclude:: ../../../../test/library/packages/DynamicLoading/doc-examples/ModuleDocTest.chpl
+   :language: chapel
+   :start-after: START_EXAMPLE_1
+   :end-before: STOP_EXAMPLE_1
 
-  This binary can be can be loaded in Chapel at runtime as follows:
+When a procedure is retrieved from a loaded binary, the returned procedure
+value is callable on any locale despite :proc:`binary.retrieve()` only
+being called on a single locale. The returned procedure is considered to
+be ``extern`` and this is reflected in its type.
 
-  .. code-block:: chapel
+.. note::
 
-    // Compile with: 'chpl Test.chpl -suseProcedurePointers=true'
-    //
+  Currently, only procedures can be retrieved from loaded binaries.
+  Support for retrieving references to data stored in a binary could
+  be added in the future.
 
-    use DynamicLoading;
+.. _Loading_Chapel_Programs_at_Runtime:
 
-    // A binary may or may not exist at this path.
-    const path = './TestBinary';
+Loading Chapel Programs at Runtime
+----------------------------------
 
-    // If loading fails an error will be issued and the 'try!' will halt.
-    const bin = try! binary.load(path);
+Chapel supports the ability to dynamically load other Chapel programs while
+having all loaded Chapel programs utilize a single shared copy of the runtime.
 
-  And a procedure named ``foo`` with type ``proc(): void`` can be retrieved:
+.. warning::
 
-  .. code-block::chapel
+  This feature is highly unstable (even more than the rest of this module).
+  As of the 2.9 release, it is only supported when ``CHPL_COMM=none`` or
+  ``CHPL_COMM=gasnet``, and also requires ``CHPL_LIB_PIC=pic``. Safety checks
+  have not been added yet, so dynamically loaded code may break in unexpected
+  ways if these constraints are not met.
 
-    // Declare the type of the procedure.
-    type P = proc(): void;
+  Additionally, while it should be possible to execute parallel and
+  distributed code from a loaded Chapel library, it is possible that certain
+  (combinations of) features may have bugs and fail to work correctly.
 
-    // Retrieve a procedure named 'foo' from 'bin' with the type 'P'.
-    const p1 = try! bin.retrieve('foo', P);
+To utilize this feature, *both* the Chapel program that is doing the loading
+(the "executable") and the Chapel library that is loaded (the "library") must
+be compiled with the flag ``--no-builtin-runtime``.
 
-    // Call the procedure.
-    p1();
+This flag causes a Chapel program to be linked against a shared library
+variant of the Chapel runtime rather than to statically link in a copy as has
+traditionally been done.
 
-  When a procedure is retrieved from a loaded binary, the returned procedure
-  value is callable on any locale despite :proc:`binary.retrieve()` only
-  being called on a single locale. The returned procedure is considered to
-  be ``extern`` and this is reflected in its type.
+In order to use ``--no-builtin-runtime``, you must make sure your Chapel
+configuration was built with ``CHPL_LIB_PIC=pic`` so that the runtime,
+executable, and library can be compiled with position-independent code.
 
-  .. note::
+Additionally, the library must be compiled with ``--library --dynamic``.
 
-    Currently, only procedures can be retrieved from loaded binaries.
-    Support for retrieving references to data stored in a binary could
-    be added in the future.
+Once compiled, the library can be loaded by the executable using the same
+process that is described in the previous sections of this module.
+
+Do note that only ``export`` procedures may be called from the library. This
+restriction may be removed in the future.
+
+.. note::
+
+  You may get strange link-time errors when trying to run the executable.
+  If this happens, it is usually because of a bug that occurs when the
+  dynamic variant of the Chapel runtime library was built.
+
+  If you've built Chapel from source, a workaround is to touch a source
+  file in the Chapel runtime and then rebuild it.
 */
 @unstable('Dynamic loading support is experimental and unstable.')
 module DynamicLoading {
 
 // This internal module contains the low-level implementation.
 private use ChapelDynamicLoading;
+
+// Publish this error class for use by users.
+public use ChapelDynamicLoading only DynLoadError;
 
 if !useProcedurePointers {
   compilerError('This module cannot be used unless the experimental ' +

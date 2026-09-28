@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -142,7 +142,6 @@ public:
   FnSymbol*                  valueFunction;
 
   int                        codegenUniqueNum;
-  const char*                doc;
 
   // Used to store the return symbol during partial copying.
   Symbol*                    retSymbol;
@@ -209,6 +208,12 @@ public:
 
   // Compute the type based on the current signature. Does not resolve.
   FunctionType*             computeAndSetType();
+
+  // Determine if this function is used as a "first class procedure".
+  bool                      isUsedAsValue()                              const;
+
+  // Determine if this function has "extern" or "export" linkage.
+  bool                      hasForeignLinkage()                          const;
 
   // Removes all statements from body and adds all statements from block.
   void                       replaceBodyStmtsWithStmts(BlockStmt* block);

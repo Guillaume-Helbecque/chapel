@@ -50,15 +50,23 @@ set -x CHPL_TASKS fifo
 
 echo "Setting CHPL_TARGET_MEM to cstdlib"
 set -x CHPL_TARGET_MEM cstdlib
+set -e CHPL_TARGET_JEMALLOC
+set -e CHPL_TARGET_MIMALLOC
 
 echo "Setting CHPL_HOST_MEM to cstdlib"
 set -x CHPL_HOST_MEM cstdlib
+set -e CHPL_HOST_JEMALLOC
+set -e CHPL_HOST_MIMALLOC
 
 echo "Setting CHPL_GMP to none"
 set -x CHPL_GMP none
 
 echo "Setting CHPL_RE2 to none"
 set -x CHPL_RE2 none
+
+set -x USE_UNWIND (eval "$CHPL_PYTHON" "$CHPL_HOME/util/chplenv/chpl_unwind.py" "--quickstart")
+echo "Setting CHPL_UNWIND to $USE_UNWIND"
+set -x CHPL_UNWIND $USE_UNWIND
 
 set -x USE_LLVM (eval "$CHPL_PYTHON" "$CHPL_HOME/util/chplenv/chpl_llvm.py" "--quickstart")
 echo "Setting CHPL_LLVM to $USE_LLVM"

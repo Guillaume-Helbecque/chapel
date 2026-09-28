@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2021-2026 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -216,6 +216,13 @@ class AttributeGroup final : public AstNode {
   bool hasPragma(PragmaTag tag) const {
     CHPL_ASSERT(tag >= 0 && tag < NUM_KNOWN_PRAGMAS);
     return pragmas_.find(tag) != pragmas_.end();
+  }
+
+  /**
+    Returns true if the given attribute name is present on this attributeGroup
+  */
+  bool hasAttribute(UniqueString attributeName) const {
+    return getAttributeNamed(attributeName) != nullptr;
   }
 
   // An iterable over the pragmas of this.

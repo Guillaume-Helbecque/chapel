@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -73,34 +73,34 @@
 For example, the following code declares an atomic variable ``x`` that
 stores an ``int``:
 
-.. code-block:: chapel
-
-      var x: atomic int;
+.. literalinclude:: ../../../../test/types/atomic/doc-examples/AtomicExamples.chpl
+   :language: chapel
+   :start-after: START_EXAMPLE_0
+   :end-before: STOP_EXAMPLE_0
 
 Such an atomic variable that is declared without an initialization expression
 will store the default value of the contained type (i.e. ``0`` or ``false``).
 
 Atomic variables can also be declared with an initial value:
 
-.. code-block:: chapel
-
-      var y: atomic int = 1;
+.. literalinclude:: ../../../../test/types/atomic/doc-examples/AtomicExamples.chpl
+   :language: chapel
+   :start-after: START_EXAMPLE_1
+   :end-before: STOP_EXAMPLE_1
 
 Similarly, a temporary ``atomic`` value can be created by casting to atomic:
 
-.. code-block:: chapel
-
-      var one: int = 1;
-      ... one : atomic int... // creates an `atomic int` initialized with 1
+.. literalinclude:: ../../../../test/types/atomic/doc-examples/AtomicExamples.chpl
+   :language: chapel
+   :start-after: START_EXAMPLE_2
+   :end-before: STOP_EXAMPLE_2
 
 Assignment is supported between atomic variables as well:
 
-.. code-block:: chapel
-
-      var x: atomic int = 1;
-      var y: atomic int = 2;
-
-      x = y; // equivalent to x.write(y.read())
+.. literalinclude:: ../../../../test/types/atomic/doc-examples/AtomicExamples.chpl
+   :language: chapel
+   :start-after: START_EXAMPLE_3
+   :end-before: STOP_EXAMPLE_3
 
 Chapel currently supports atomic operations for bools, all supported sizes of
 signed and unsigned integers, as well as all supported sizes of reals.  Note
@@ -216,7 +216,7 @@ module Atomics {
     if isInt(valType)  then return "int_least"  + numBits(valType):string + "_t";
     if isUint(valType) then return "uint_least" + numBits(valType):string + "_t";
     if isReal(valType) then return "_real"      + numBits(valType):string;
-    if isPointerType(valType) then return "uintptr_t";
+    if isAnyCPtr(valType) then return "uintptr_t";
   }
 
   private proc externFunc(param s: string, type valType, param explicit=true) param {
@@ -244,6 +244,7 @@ module Atomics {
 
   pragma "atomic type"
   pragma "ignore noinit"
+  @chpldoc.hideImplType
   record AtomicBool : writeSerializable {
     // Support `valType` on atomic bool type and instances for symmetry with
     // numeric atomics
@@ -303,6 +304,7 @@ module Atomics {
       extern externFunc("load", bool)
         proc atomic_load(const ref obj:externT(bool), order:memory_order): bool;
 
+      pragma "no user debug info"
       var ret:bool;
       on this do ret = atomic_load(_v, c_memory_order(order));
       return ret;
@@ -327,6 +329,7 @@ module Atomics {
       extern externFunc("exchange", bool)
         proc atomic_exchange(ref obj:externT(bool), val:bool, order:memory_order): bool;
 
+      pragma "no user debug info"
       var ret:bool;
       on this do ret = atomic_exchange(_v, val, c_memory_order(order));
       return ret;
@@ -345,6 +348,7 @@ module Atomics {
       extern externFunc("compare_exchange_strong", bool)
         proc atomic_compare_exchange_strong(ref obj:externT(bool), ref expected:bool, desired:bool, succ:memory_order, fail:memory_order): bool;
 
+      pragma "no user debug info"
       var ret:bool;
       on this {
         var localizedExpected = expected;
@@ -371,6 +375,7 @@ module Atomics {
       extern externFunc("compare_exchange_weak", bool)
         proc atomic_compare_exchange_weak(ref obj:externT(bool), ref expected:bool, desired:bool, succ:memory_order, fail:memory_order): bool;
 
+      pragma "no user debug info"
       var ret:bool;
       on this {
         var localizedExpected = expected;
@@ -390,6 +395,7 @@ module Atomics {
       extern externFunc("compare_exchange_strong", bool)
         proc atomic_compare_exchange_strong(ref obj:externT(bool), ref expected:bool, desired:bool, succ:memory_order, fail:memory_order): bool;
 
+      pragma "no user debug info"
       var ret:bool;
       on this {
         var mutableExpected = expected;
@@ -435,6 +441,7 @@ module Atomics {
 
   // TODO: should this be an operator method AtomicBool.: ?
   pragma "do not resolve unless called"
+  pragma "no copy return"
   @chpldoc.nodoc
   operator :(rhs: bool, type t:AtomicBool) {
     var lhs: AtomicBool = rhs; // use init=
@@ -443,6 +450,7 @@ module Atomics {
 
   pragma "atomic type"
   pragma "ignore noinit"
+  @chpldoc.hideImplType
   record AtomicT : writeSerializable {
     @chpldoc.nodoc
     type valType;
@@ -501,6 +509,7 @@ module Atomics {
       extern externFunc("load", valType)
         proc atomic_load(const ref obj:externT(valType), order:memory_order): valType;
 
+      pragma "no user debug info"
       var ret:valType;
       on this do ret = atomic_load(_v, c_memory_order(order));
       return ret;
@@ -525,6 +534,7 @@ module Atomics {
       extern externFunc("exchange", valType)
         proc atomic_exchange(ref obj:externT(valType), val:valType, order:memory_order): valType;
 
+      pragma "no user debug info"
       var ret:valType;
       on this do ret = atomic_exchange(_v, val, c_memory_order(order));
       return ret;
@@ -543,6 +553,7 @@ module Atomics {
       extern externFunc("compare_exchange_strong", valType)
         proc atomic_compare_exchange_strong(ref obj:externT(valType), ref expected:valType, desired:valType, succ:memory_order, fail:memory_order): bool;
 
+      pragma "no user debug info"
       var ret:bool;
       on this {
         var localizedExpected = expected;
@@ -569,6 +580,7 @@ module Atomics {
       extern externFunc("compare_exchange_weak", valType)
         proc atomic_compare_exchange_weak(ref obj:externT(valType), ref expected:valType, desired:valType, succ:memory_order, fail:memory_order): bool;
 
+      pragma "no user debug info"
       var ret:bool;
       on this {
         var localizedExpected = expected;
@@ -588,6 +600,7 @@ module Atomics {
       extern externFunc("compare_exchange_strong", valType)
         proc atomic_compare_exchange_strong(ref obj:externT(valType), ref expected:valType, desired:valType, succ:memory_order, fail:memory_order): bool;
 
+      pragma "no user debug info"
       var ret:bool;
       on this {
         var mutableExpected = expected;
@@ -607,6 +620,7 @@ module Atomics {
       extern externFunc("fetch_add", valType)
         proc atomic_fetch_add(ref obj:externT(valType), operand:valType, order:memory_order): valType;
 
+      pragma "no user debug info"
       var ret:valType;
       on this do ret = atomic_fetch_add(_v, val, c_memory_order(order));
       return ret;
@@ -635,6 +649,7 @@ module Atomics {
       extern externFunc("fetch_sub", valType)
         proc atomic_fetch_sub(ref obj:externT(valType), operand:valType, order:memory_order): valType;
 
+      pragma "no user debug info"
       var ret:valType;
       on this do ret = atomic_fetch_sub(_v, val, c_memory_order(order));
       return ret;
@@ -666,6 +681,7 @@ module Atomics {
       extern externFunc("fetch_or", valType)
         proc atomic_fetch_or(ref obj:externT(valType), operand:valType, order:memory_order): valType;
 
+      pragma "no user debug info"
       var ret:valType;
       on this do ret = atomic_fetch_or(_v, val, c_memory_order(order));
       return ret;
@@ -700,6 +716,7 @@ module Atomics {
       extern externFunc("fetch_and", valType)
         proc atomic_fetch_and(ref obj:externT(valType), operand:valType, order:memory_order): valType;
 
+      pragma "no user debug info"
       var ret:valType;
       on this do ret = atomic_fetch_and(_v, val, c_memory_order(order));
       return ret;
@@ -734,6 +751,7 @@ module Atomics {
       extern externFunc("fetch_xor", valType)
         proc atomic_fetch_xor(ref obj:externT(valType), operand:valType, order:memory_order): valType;
 
+      pragma "no user debug info"
       var ret:valType;
       on this do ret = atomic_fetch_xor(_v, val, c_memory_order(order));
       return ret;
@@ -812,6 +830,7 @@ module Atomics {
   }
 
   // TODO: should this be an operator method AtomicT.: ?
+  pragma "no copy return"
   @chpldoc.nodoc
   operator :(rhs, type t:AtomicT)
   where rhs.type == t.valType {

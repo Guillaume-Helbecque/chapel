@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -47,6 +47,7 @@ module ChapelDomain {
   config param noNegativeStrideWarnings = false;
 
   @chpldoc.nodoc
+  @edition(last="2.0")
   config param noSortedWarnings = false;
 
   pragma "no copy return"
@@ -348,6 +349,12 @@ module ChapelDomain {
         HaltWrappers.boundsCheckHalt("domain mismatch on return");
       }
     }
+  }
+
+  pragma "last resort"
+  proc chpl__checkDomainsMatch(a, b) {
+    compilerError("expected an array or iterator but got a value of type ",
+                  a.type:string);
   }
 
   proc chpl_countDomHelp(dom, counts) {
@@ -832,7 +839,7 @@ module ChapelDomain {
   }
 
   @chpldoc.nodoc
-  operator =(ref a: domain, b) {  // b is iteratable
+  operator =(ref a: domain, b) {  // b is iterable
     if a.isRectangular() then
       compilerError("assigning ", b.type:string, " to a rectangular domain");
     if ! canBeIteratedOver(b) then
@@ -1048,6 +1055,7 @@ module ChapelDomain {
   pragma "domain"
   pragma "has runtime type"
   pragma "ignore noinit"
+  @chpldoc.hideImplType
   record _domain : writeSerializable, readDeserializable {
     var _pid:int; // only used when privatized
     pragma "owned"
@@ -1796,6 +1804,7 @@ module ChapelDomain {
       domain will be default-initialized. They can be set to desired
       values as usual, for example using an assignment operator.
     */
+    @chpldoc.hideImplType
     record unsafeAssignManager : contextManager {
       @chpldoc.nodoc
       var _lhsInstance;
@@ -2137,15 +2146,10 @@ module ChapelDomain {
 
       For example:
 
-      .. code-block:: chapel
-
-        var D = {0..0};
-        var A: [D] shared C = [new shared C(0)];
-        manage D.unsafeAssign({0..1}, checks=true) as mgr {
-          // 'D' has a new index '1', so 'A' has a new element at '1',
-          // which we need to initialize:
-          mgr.initialize(A, 1, new shared C(1));
-        }
+      .. literalinclude:: ../../../../test/domains/doc-examples/DomainUnsafeAssign.chpl
+         :language: chapel
+         :start-after: START_EXAMPLE
+         :end-before: STOP_EXAMPLE
 
       .. note::
 
@@ -2249,36 +2253,31 @@ module ChapelDomain {
     }
 
     /*
-     Creates an index buffer which can be used for faster index addition.
+      Creates an index buffer which can be used for faster index addition.
+      For example, instead of:
 
-     For example, instead of:
+      .. literalinclude:: ../../../../test/domains/doc-examples/DomainCreateIndexBuffer.chpl
+         :language: chapel
+         :start-after: START_EXAMPLE_0
+         :end-before: STOP_EXAMPLE_0
 
-       .. code-block:: chapel
+      You can use `SparseIndexBuffer` for better performance:
 
-          var spsDom: sparse subdomain(parentDom);
-          for i in someIndexIterator() do
-            spsDom += i;
+      .. literalinclude:: ../../../../test/domains/doc-examples/DomainCreateIndexBuffer.chpl
+         :language: chapel
+         :start-after: START_EXAMPLE_1
+         :end-before: STOP_EXAMPLE_1
 
-     You can use `SparseIndexBuffer` for better performance:
+      The above snippet will create a buffer of size N indices, and will
+      automatically commit indices to the sparse domain as the buffer fills up.
+      Indices are also committed when the buffer goes out of scope.
 
-       .. code-block:: chapel
-
-          var spsDom: sparse subdomain(parentDom);
-          var idxBuf = spsDom.createIndexBuffer(size=N);
-          for i in someIndexIterator() do
-            idxBuf.add(i);
-          idxBuf.commit();
-
-     The above snippet will create a buffer of size N indices, and will
-     automatically commit indices to the sparse domain as the buffer fills up.
-     Indices are also committed when the buffer goes out of scope.
-
-     :arg size: Size of the buffer in number of indices.
-     :type size: int
+      :arg size: Size of the buffer in number of indices.
+      :type size: int
     */
     @unstable("createIndexBuffer() is subject to change in the future.")
-    inline proc createIndexBuffer(size: int) {
-      return _value.dsiCreateIndexBuffer(size);
+    inline proc createIndexBuffer(size: int, dataSorted=false, isUnique=false) {
+      return _value.dsiCreateIndexBuffer(size, dataSorted, isUnique);
     }
 
     /*
@@ -2801,7 +2800,7 @@ module ChapelDomain {
        Returns a local view of the sub-domain (slice) defined by the provided
        range(s), halting if the slice contains elements that are not local.
     */
-    pragma "no where doc"
+    @chpldoc.noWhereClause
     proc localSlice(r... rank)
     where chpl__isTupleOfRanges(r) &&
           !_value.isDefaultRectangular()
@@ -2827,6 +2826,7 @@ module ChapelDomain {
          It is recommended to use :proc:`Sort.sorted` instead of this method.
 
     */
+    @edition(last="2.0")
     iter sorted(comparator:?t = chpl_defaultComparator()) {
       if !this.isAssociative() then
         compilerError("'.sorted()' is only supported on associative domains");
@@ -2926,7 +2926,7 @@ module ChapelDomain {
        do not fit in the new idxType or when the original stride(s)
        are not legal for the new `strides` parameter.
      */
-    pragma "no where doc"
+    @chpldoc.noWhereClause
     proc tryCast(type t: domain)
       where chpl__isRectangularDomType(t) && this.isRectangular()
         &&  this.chpl_domainTryCastIsSafe(t)

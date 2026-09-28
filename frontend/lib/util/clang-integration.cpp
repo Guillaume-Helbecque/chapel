@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2021-2026 Hewlett Packard Enterprise Development LP
  * Other additional copyright holders may be indicated within.
  *
  * The entirety of this work is licensed under the Apache License,
@@ -35,7 +35,9 @@
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/Job.h"
+#if LLVM_VERSION_MAJOR <= 21
 #include "clang/Driver/Options.h"
+#endif
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendActions.h"
@@ -60,11 +62,37 @@ namespace util {
 using namespace types;
 using namespace resolution;
 
-
 const std::vector<std::string>& clangFlags(Context* context) {
   QUERY_BEGIN_INPUT(clangFlags, context);
+
   std::vector<std::string> ret;
-  ret.push_back("clang"); // dummy argv[0] to make this callable in C++ tests
+  ret.push_back("clang");
+
+  if (auto chplEnvRes = context->getChplEnv()) {
+    const auto& chplEnv = chplEnvRes.get();
+    // Append target compile args
+    static std::string compileArgsKeys[] = {"CHPL_LLVM_CLANG_C",
+                                            "CHPL_TARGET_BUNDLED_COMPILE_ARGS",
+                                            "CHPL_TARGET_SYSTEM_COMPILE_ARGS"};
+    for (const auto& key : compileArgsKeys) {
+      if (chplEnv.find(key) != chplEnv.end()) {
+        auto value = chplEnv.at(key);
+        if (!value.empty()) {
+          // If CHPL_LLVM_CLANG_C exists use it as the clang to invoke,
+          // removing the default value we started with first.
+          if (key == "CHPL_LLVM_CLANG_C") {
+            ret.clear();
+          }
+          std::istringstream iss(value);
+          std::string arg;
+          while (iss >> arg) {
+            ret.push_back(arg);
+          }
+        }
+      }
+    }
+  }
+
   return QUERY_END(ret);
 }
 
@@ -85,24 +113,6 @@ void initializeLlvmTargets() {
   }
 #endif
 }
-
-#ifdef HAVE_LLVM
-std::unique_ptr<clang::DiagnosticOptions>
-wrapCreateAndPopulateDiagOpts(llvm::ArrayRef<const char *> Argv) {
-#if LLVM_VERSION_MAJOR >= 14
-  return clang::CreateAndPopulateDiagOpts(Argv);
-#else
-  auto diagOpts = std::make_unique<clang::DiagnosticOptions>();
-  unsigned missingArgIndex, missingArgCount;
-  llvm::opt::InputArgList Args =
-    clang::driver::getDriverOptTable().ParseArgs(Argv.slice(1),
-                                                 missingArgIndex,
-                                                 missingArgCount);
-  clang::ParseDiagnosticArgs(*diagOpts, Args);
-  return diagOpts;
-#endif
-}
-#endif
 
 #ifdef HAVE_LLVM
 static std::string getChplLocaleModel(Context* context) {
@@ -152,9 +162,21 @@ const std::vector<std::string>& getCC1Arguments(Context* context,
   // Create a compiler instance to handle the actual work.
   auto diagOptions = new clang::DiagnosticOptions();
   auto diagClient = new clang::TextDiagnosticPrinter(llvm::errs(),
-                                                     &*diagOptions);
+#if LLVM_VERSION_MAJOR >= 21
+                                                     *diagOptions
+#else
+                                                     &*diagOptions
+#endif
+                                                    );
   auto diagID = new clang::DiagnosticIDs();
-  auto diags = new clang::DiagnosticsEngine(diagID, &*diagOptions, diagClient);
+  auto diags = new clang::DiagnosticsEngine(
+    diagID,
+#if LLVM_VERSION_MAJOR >= 21
+    *diagOptions,
+#else
+    &*diagOptions,
+#endif
+    diagClient);
 
   // takes ownership of all of the above
   clang::driver::Driver D(argsCstrs[0], triple, *diags);
@@ -286,10 +308,17 @@ createClangPrecompiledHeader(Context* context, ID externBlockId) {
       cc1argsCstrs.push_back(arg.c_str());
     }
 
-    auto diagOptions = wrapCreateAndPopulateDiagOpts(cc1argsCstrs);
+    auto diagOptions = clang::CreateAndPopulateDiagOpts(cc1argsCstrs);
     auto diagClient = new clang::TextDiagnosticBuffer();
+#if LLVM_VERSION_MAJOR >= 21
+    auto clangDiags =
+      clang::CompilerInstance::createDiagnostics(*llvm::vfs::getRealFileSystem(),
+                                                 *diagOptions,
+                                                 diagClient,
+                                                 /* owned */ true);
+#else
 #if LLVM_VERSION_MAJOR >= 20
-      auto clangDiags =
+    auto clangDiags =
       clang::CompilerInstance::createDiagnostics(*llvm::vfs::getRealFileSystem(),
                                                  diagOptions.release(),
                                                  diagClient,
@@ -299,6 +328,7 @@ createClangPrecompiledHeader(Context* context, ID externBlockId) {
       clang::CompilerInstance::createDiagnostics(diagOptions.release(),
                                                  diagClient,
                                                  /* owned */ true);
+#endif
 #endif
     Clang->setDiagnostics(&*clangDiags);
 
@@ -368,8 +398,17 @@ static QualifiedType convertClangTypeToChapelType(
     Context* context, const clang::Type* clangType) {
   QualifiedType chapelType;
 
-  auto clangBuiltinType = clangType->getAs<clang::BuiltinType>();
-  if (clangBuiltinType) {
+  if (auto clangPtrType = clangType->getAs<clang::PointerType>()) {
+    const auto& pointee = clangPtrType->getPointeeType();
+    bool isConst = pointee.isConstQualified();
+
+    auto eltType = convertClangTypeToChapelType(context, pointee.getTypePtr());
+    if (eltType.isUnknownOrErroneous()) return QualifiedType();
+
+    auto cPtrType = isConst ? types::CPtrType::getConst(context, eltType.type())
+                            : types::CPtrType::get(context, eltType.type());
+    chapelType = QualifiedType(QualifiedType::TYPE, cPtrType);
+  } else if (auto clangBuiltinType = clangType->getAs<clang::BuiltinType>()) {
 #define BUILTIN_TYPE_ENTRY(ClangType, ChapelCTypeString)               \
   case clang::BuiltinType::ClangType:                                  \
     chapelType =                                                       \
@@ -446,9 +485,22 @@ static owned<clang::CompilerInstance> getCompilerInstanceForReadingPch(
   }
 
   clang::CompilerInstance* Clang = new clang::CompilerInstance();
-  auto diagOptions = wrapCreateAndPopulateDiagOpts(cc1argsCstrs);
+  auto diagOptions = clang::CreateAndPopulateDiagOpts(cc1argsCstrs);
   auto diagClient = new clang::TextDiagnosticPrinter(llvm::errs(),
-                                                     &*diagOptions);
+#if LLVM_VERSION_MAJOR >= 21
+                                                     *diagOptions
+#else
+                                                     &*diagOptions
+#endif
+                                                    );
+
+#if LLVM_VERSION_MAJOR >= 21
+  auto clangDiags =
+    clang::CompilerInstance::createDiagnostics(*llvm::vfs::getRealFileSystem(),
+                                               *diagOptions,
+                                               diagClient,
+                                               /* owned */ true);
+#else
 #if LLVM_VERSION_MAJOR >= 20
   auto clangDiags =
     clang::CompilerInstance::createDiagnostics(*llvm::vfs::getRealFileSystem(),
@@ -461,6 +513,7 @@ static owned<clang::CompilerInstance> getCompilerInstanceForReadingPch(
                                                diagClient,
                                                /* owned */ true);
 #endif
+#endif
   Clang->setDiagnostics(&*clangDiags);
 
   bool success =
@@ -468,9 +521,22 @@ static owned<clang::CompilerInstance> getCompilerInstanceForReadingPch(
                                               cc1argsCstrs, *clangDiags);
   CHPL_ASSERT(success);
 
-  Clang->setTarget(clang::TargetInfo::CreateTargetInfo(Clang->getDiagnostics(), Clang->getInvocation().TargetOpts));
+  Clang->setTarget(
+    clang::TargetInfo::CreateTargetInfo(
+      Clang->getDiagnostics(),
+#if LLVM_VERSION_MAJOR >= 21
+      Clang->getInvocation().getTargetOpts()
+#else
+      Clang->getInvocation().TargetOpts
+#endif
+    )
+  );
   Clang->createFileManager();
+#if LLVM_VERSION_MAJOR >= 22
+  Clang->createSourceManager();
+#else
   Clang->createSourceManager(Clang->getFileManager());
+#endif
   Clang->createPreprocessor(clang::TU_Complete);
 
   return toOwned(Clang);
@@ -589,6 +655,7 @@ const TypedFnSignature* const& precompiledHeaderSigForFn(
     if (auto fnDecl = llvm::dyn_cast<clang::FunctionDecl>(decl)) {
       std::vector<UntypedFnSignature::FormalDetail> formals;
       std::vector<types::QualifiedType> formalTypes;
+      Bitmap formalsErrored; /* TODO: populate this property */
       for (auto clangFormal : fnDecl->parameters()) {
         auto formalName = UniqueString::get(context, clangFormal->getName());
         formals.emplace_back(formalName, UntypedFnSignature::DK_NO_DEFAULT,
@@ -603,6 +670,7 @@ const TypedFnSignature* const& precompiledHeaderSigForFn(
         formalChplType = QualifiedType(intent, formalChplType.type());
         formalTypes.push_back(formalChplType);
       }
+      formalsErrored.resize(formals.size() + 1);
 
       const UntypedFnSignature* untypedSig = UntypedFnSignature::get(
           context, fnId, name,
@@ -618,10 +686,11 @@ const TypedFnSignature* const& precompiledHeaderSigForFn(
       result = TypedFnSignature::get(
           context, untypedSig, std::move(formalTypes),
           /* whereClauseResult */ TypedFnSignature::WHERE_NONE,
-          /* needsInstantiation */ false,
+          /* instantiationState */ TypedFnSignature::INST_CONCRETE,
           /* instantiatedFrom */ nullptr,
           /* parentFn */ nullptr,
           /* formalsInstantiated */ Bitmap(),
+          /* formalsErrored */ formalsErrored,
           /* outerVariables */ OuterVariables());
     }
   });

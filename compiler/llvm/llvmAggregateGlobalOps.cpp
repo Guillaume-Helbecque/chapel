@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -269,11 +269,7 @@ struct MemOpRanges { // from MemsetRanges in MemCpyOptimizer
 
     addRange(OffsetFromFirst, StoreSize, Slack,
              SI->getPointerOperand(),
-#if HAVE_LLVM_VER >= 150
              SI->getAlign().value(),
-#else
-             SI->getAlignment(),
-#endif
              SI);
   }
   // CUSTOM because MemsetRanges doesn't work with LoadInsts.
@@ -283,11 +279,7 @@ struct MemOpRanges { // from MemsetRanges in MemCpyOptimizer
 
     addRange(OffsetFromFirst, LoadSize, Slack,
              LI->getPointerOperand(),
-#if HAVE_LLVM_VER >= 150
              LI->getAlign().value(),
-#else
-             LI->getAlignment(),
-#endif
              LI);
   }
   // CUSTOM adds Slack
@@ -431,9 +423,9 @@ Instruction *AggregateGlobalOpsOpt::tryAggregating(Instruction *StartInst, Value
   Module* M = StartInst->getParent()->getParent()->getParent();
   LLVMContext& Context = StartInst->getContext();
 
-  Type* int8Ty = Type::getInt8Ty(Context);
-  Type* sizeTy = DL->getIntPtrType(Context, 0);
-  Type* globalInt8PtrTy = llvm::PointerType::get(int8Ty, globalSpace);
+  auto int8Ty = Type::getInt8Ty(Context);
+  auto sizeTy = DL->getIntPtrType(Context, 0);
+  auto globalInt8PtrTy = getPointerType(int8Ty, globalSpace);
   bool isLoad = isa<LoadInst>(StartInst);
   bool isStore = isa<StoreInst>(StartInst);
   Instruction *lastAddedInsn = NULL;
@@ -647,9 +639,9 @@ Instruction *AggregateGlobalOpsOpt::tryAggregating(Instruction *StartInst, Value
                                                    offsets);
         trackLLVMValue(i8Dst);
 
-        Type* StoreType = oldStore->getValueOperand()->getType();
-        Type* PtrType = llvm::PointerType::getUnqual(StoreType);
-        Value* Dst = irBuilder.CreatePointerCast(i8Dst, PtrType);
+        auto StoreType = oldStore->getValueOperand()->getType();
+        auto PtrType = getPointerType(StoreType);
+        auto* Dst = irBuilder.CreatePointerCast(i8Dst, PtrType);
         trackLLVMValue(Dst);
 
         StoreInst* newStore =
@@ -674,8 +666,8 @@ Instruction *AggregateGlobalOpsOpt::tryAggregating(Instruction *StartInst, Value
     if( isLoad ) addrSpaceSrc = globalSpace;
 
     Type *types[3];
-    types[0] = llvm::PointerType::get(int8Ty, addrSpaceDst);
-    types[1] = llvm::PointerType::get(int8Ty, addrSpaceSrc);
+    types[0] = getPointerType(int8Ty, addrSpaceDst);
+    types[1] = getPointerType(int8Ty, addrSpaceSrc);
     types[2] = sizeTy;
 
 #if LLVM_VERSION_MAJOR >= 20
@@ -733,8 +725,8 @@ Instruction *AggregateGlobalOpsOpt::tryAggregating(Instruction *StartInst, Value
                                                    offsets);
         trackLLVMValue(i8Src);
 
-        Type* LoadType = oldLoad->getType();
-        Type* PtrType = llvm::PointerType::getUnqual(LoadType);
+        auto LoadType = oldLoad->getType();
+        auto PtrType = getPointerType(LoadType);
 
         Value* Src = irBuilder.CreatePointerCast(i8Src, PtrType);
         trackLLVMValue(Src);
@@ -782,11 +774,7 @@ bool AggregateGlobalOpsOpt::run(Function &F) {
 
     if( DebugThis ) {
       dbgs() << "Working on BB ";
-#if HAVE_LLVM_VER >= 110
       BB->print(dbgs(), nullptr, false, true);
-#else
-      BB->print(dbgs(), true);
-#endif
       dbgs() << '\n';
     }
 
@@ -809,11 +797,7 @@ bool AggregateGlobalOpsOpt::run(Function &F) {
     if( DebugThis && ChangedBB ) {
       dbgs() << "in function " << F.getName() << "\n";
       dbgs() << "After transform BB is ";
-#if HAVE_LLVM_VER >= 110
       BB->print(dbgs(), nullptr, false, true);
-#else
-      BB->print(dbgs(), true);
-#endif
       dbgs() << '\n';
     }
 

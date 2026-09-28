@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -21,6 +21,7 @@
 #include "chpl/util/break.h"
 #include "llvmTracker.h"
 #include "llvmUtil.h"
+#include "llvmDebug.h"
 #include "symbol.h"
 #include "llvm/Support/Format.h"
 
@@ -114,9 +115,19 @@ llvm::AllocaInst* createAllocaInFunctionEntry(llvm::IRBuilder<>* irBuilder,
     irBuilder->SetInsertPoint(&func->getEntryBlock());
   }
 
+  // reset the current debug location to avoid accidentally attaching it to the alloca
+  llvm::DebugLoc currentDebugLocation;
+  if (debugInfo) {
+    currentDebugLocation = irBuilder->getCurrentDebugLocation();
+    irBuilder->SetCurrentDebugLocation(llvm::DebugLoc());
+  }
+
   llvm::AllocaInst *tempVar = irBuilder->CreateAlloca(type, nullptr, name);
   trackLLVMValue(tempVar);
+
   irBuilder->SetInsertPoint(&func->back());
+  if (debugInfo)
+    irBuilder->SetCurrentDebugLocation(currentDebugLocation);
   return tempVar;
 }
 
@@ -290,28 +301,8 @@ PromotedPair convertValuesToLarger(
   }
 
   //Pointers
-  if(type1->isPointerTy() && type2->isPointerTy()) {
-    llvm::Type *castTy;
-
-#if HAVE_LLVM_VER >= 150
-    // pointers are opaque, so equivalent to always being a void pointer;
-    // the below logic is moot
-    castTy = type1;
-#else
-    llvm::Type* int8_type = llvm::Type::getInt8Ty(value1->getContext());
-    bool t1isVoidStar = (type1->getPointerElementType() == int8_type);
-    bool t2isVoidStar = (type2->getPointerElementType() == int8_type);
-
-    assert(type1->getPointerAddressSpace() == type2->getPointerAddressSpace());
-
-    // if type2 a non-void pointer type, then set castTy to type2
-    // otherwise just use type1
-    if ((t1isVoidStar) && (!t2isVoidStar)) {
-      castTy = type2;
-    } else {
-      castTy = type1;
-    }
-#endif
+  if (type1->isPointerTy() && type2->isPointerTy()) {
+    llvm::Type *castTy = type1;
 
     llvm::Value* cast1 = irBuilder->CreatePointerCast(value1, castTy);
     llvm::Value* cast2 = irBuilder->CreatePointerCast(value2, castTy);
@@ -332,7 +323,6 @@ int64_t arrayVecN(llvm::Type *t)
     unsigned n = at->getNumElements();
     return n;
   } else if( t->isVectorTy() ) {
-#if HAVE_LLVM_VER >= 120
     unsigned n;
     if (llvm::FixedVectorType *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
       n = vt->getNumElements();
@@ -340,10 +330,6 @@ int64_t arrayVecN(llvm::Type *t)
       // Scalable vector type not handled here
       return -1;
     }
-#else
-    llvm::VectorType *vt = llvm::dyn_cast<llvm::VectorType>(t);
-    unsigned n = vt->getNumElements();
-#endif
     return n;
   } else {
     return -1;
@@ -513,8 +499,8 @@ llvm::Value *convertValueToType(llvm::IRBuilder<>* irBuilder,
       // todo: setValueAlignment(tmp_alloc, ???, ???);
       *alloca = tmp_alloc;
       // Now cast the allocation to both fromType and toType.
-      llvm::Type* curPtrType = llvm::PointerType::getUnqual(curType);
-      llvm::Type* newPtrType = llvm::PointerType::getUnqual(newType);
+      auto curPtrType = getPointerType(curType);
+      auto newPtrType = getPointerType(newType);
       // Now get cast pointers
       llvm::Value* tmp_cur = irBuilder->CreatePointerCast(tmp_alloc, curPtrType);
       trackLLVMValue(tmp_cur);
@@ -522,14 +508,7 @@ llvm::Value *convertValueToType(llvm::IRBuilder<>* irBuilder,
       trackLLVMValue(tmp_new);
       llvm::StoreInst* store_cur = irBuilder->CreateStore(value, tmp_cur);
       trackLLVMValue(store_cur);
-#if HAVE_LLVM_VER >= 150
       return trackLLVMValue(irBuilder->CreateLoad(newType, tmp_new));
-#elif HAVE_LLVM_VER >= 130
-      return trackLLVMValue(irBuilder->CreateLoad(
-                        tmp_new->getType()->getPointerElementType(), tmp_new));
-#else
-      return trackLLVMValue(irBuilder->CreateLoad(tmp_new));
-#endif
     }
   }
 
@@ -804,32 +783,18 @@ void nprint_view(const llvm::Metadata* arg) { list_view(arg); }
 #endif // if TRACK_LLVM_VALUES
 
 llvm::AttrBuilder llvmPrepareAttrBuilder(llvm::LLVMContext& ctx) {
-  #if HAVE_LLVM_VER >= 140
   llvm::AttrBuilder ret(ctx);
-  #else
-  llvm::AttrBuilder ret;
-  std::ignore = ctx;
-  #endif
   return ret;
 }
 
 void llvmAddAttr(llvm::LLVMContext& ctx, llvm::AttributeList& attrs,
             size_t idx,
             llvm::AttrBuilder& b) {
-  #if HAVE_LLVM_VER >= 140
   attrs = attrs.addAttributesAtIndex(ctx, idx, b);
-  #else
-  attrs = attrs.addAttributes(ctx, idx, b);
-  #endif
 }
 
 void llvmAttachStructRetAttr(llvm::AttrBuilder& b, llvm::Type* returnTy) {
-  #if HAVE_LLVM_VER >= 130
   b.addStructRetAttr(returnTy);
-  #else
-  b.addAttribute(llvm::Attribute::StructRet);
-  std::ignore = returnTy;
-  #endif
 
   #if HAVE_LLVM_VER >= 180
   // matches attributes added by clang with sret
@@ -841,10 +806,8 @@ void llvmAttachStructRetAttr(llvm::AttrBuilder& b, llvm::Type* returnTy) {
 bool isOpaquePointer(llvm::Type* ty) {
 #if HAVE_LLVM_VER >= 170
   return ty->isPointerTy();
-#elif HAVE_LLVM_VER >= 140
-  return ty->isOpaquePointerTy();
 #else
-  return false; // older LLVMs did not have opaque pointers
+  return ty->isOpaquePointerTy();
 #endif
 }
 
@@ -872,6 +835,13 @@ llvm::Type* getPointerType(llvm::IRBuilder<>* irBuilder, unsigned AS) {
   return irBuilder->getPtrTy(AS);
 #else
   return irBuilder->getInt8PtrTy(AS);
+#endif
+}
+llvm::Type* getPointerType(llvm::Type* eltType, unsigned AS) {
+#if LLVM_VERSION_MAJOR < 21
+  return llvm::PointerType::get(eltType, AS);
+#else
+  return llvm::PointerType::get(eltType->getContext(), AS);
 #endif
 }
 

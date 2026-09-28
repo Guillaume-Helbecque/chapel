@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -76,57 +76,17 @@
   The following demonstrates executing multiple Chapel tasks using a `coforall`
   and a single Python interpreter:
 
-  ..
-     START_TEST
-     FILENAME: CoforallTest.chpl
-     START_GOOD
-     1 4 9 16 25 36 49 64 81 100
-     END_GOOD
-
-  .. code-block:: chapel
-
-     use Python;
-
-     var Arr: [1..10] int = 1..10;
-
-     var interp = new Interpreter();
-     var func = interp.compileLambda("lambda x,: x * x");
-
-     coforall tid in 1..10 {
-       // the call to 'func' automatically acquires and releases the GIL
-       Arr[tid] = func(int, tid);
-     }
-     writeln(Arr);
-
-  ..
-     END_TEST
+  .. literalinclude:: ../../../../test/library/packages/Python/doc-examples/CoforallTest.chpl
+     :language: chapel
+     :start-after: START_EXAMPLE
+     :end-before: STOP_EXAMPLE
 
   The code works similarly with a data-parallel ``forall`` loop:
 
-  ..
-     START_TEST
-     FILENAME: ForallTest.chpl
-     START_GOOD
-     1 4 9 16 25 36 49 64 81 100
-     END_GOOD
-
-  .. code-block:: chapel
-
-     use Python;
-
-     var Arr: [1..10] int = 1..10;
-
-     var interp = new Interpreter();
-     var func = interp.compileLambda("lambda x,: x * x");
-
-     forall tid in 1..10 {
-       // the call to 'func' automatically acquires and releases the GIL
-       Arr[tid] = func(int, tid);
-     }
-     writeln(Arr);
-
-  ..
-     END_TEST
+  .. literalinclude:: ../../../../test/library/packages/Python/doc-examples/ForallTest.chpl
+     :language: chapel
+     :start-after: START_EXAMPLE
+     :end-before: STOP_EXAMPLE
 
   Although these examples use Chapel's task parallelism constructs,
   they will be no faster than running the tasks serially due to the GIL.
@@ -140,37 +100,10 @@
   The following example demonstrates how to create a Python interpreter and run
   a Python function on each locale:
 
-  ..
-     START_TEST
-     FILENAME: DistributedTest.chpl
-     EXECOPTS: --n=10
-     START_GOOD
-     2 3 4 5 6 7 8 9 10 11
-     END_GOOD
-
-  .. code-block:: chapel
-
-      use Python, BlockDist;
-
-      config const n = 100;
-      var Arr = blockDist.createArray({1..n}, int);
-      Arr = 1..n;
-
-      coforall l in Arr.targetLocales() {
-        on l {
-          // each locale has its own interpreter
-          const interp = new Interpreter();
-          const func = interp.compileLambda("lambda x,: x + 1");
-
-          forall i in Arr.localSubdomain() with (var gil = new GIL()) {
-            Arr[i] = func(Arr.eltType, Arr[i]);
-          }
-        }
-      }
-      writeln(Arr);
-
-  ..
-     END_TEST
+  .. literalinclude:: ../../../../test/library/packages/Python/doc-examples/DistributedTest.chpl
+     :language: chapel
+     :start-after: START_EXAMPLE
+     :end-before: STOP_EXAMPLE
 
   In this example, ``interp`` and ``func`` only exist for the body of the
   ``on`` block, Python objects can be made to persist beyond the scope of a
@@ -190,37 +123,10 @@
   needed at the point where the output changes from Python to Chapel or
   vice-versa. For example:
 
-  ..
-     START_TEST
-     FILENAME: Printing.chpl
-     START_GOOD
-     Hello from Chapel
-     Let's call some Python!
-     Hello, World!
-     Goodbye, World!
-     Back to Chapel
-     END_GOOD
-
-  .. code-block:: chapel
-
-     use Python, IO;
-
-     var interp = new Interpreter();
-     var func = interp.compileLambda("lambda x,: print(x)");
-
-     writeln("Hello from Chapel");
-     writeln("Let's call some Python!");
-     IO.stdout.flush(); // flush the Chapel output buffer before calling Python
-
-     func("Hello, World!");
-     func("Goodbye, World!");
-     interp.flush(); // flush the Python output buffer before calling Chapel again
-
-     writeln("Back to Chapel");
-
-  ..
-     END_TEST
-
+  .. literalinclude:: ../../../../test/library/packages/Python/doc-examples/Printing.chpl
+     :language: chapel
+     :start-after: START_EXAMPLE
+     :end-before: STOP_EXAMPLE
 
   More Examples:
   --------------
@@ -734,12 +640,6 @@ module Python {
     */
     proc importModule(modName: string): owned Module throws {
       return new Module(this, modName);
-    }
-
-    @deprecated("'importModule' with a 'moduleContents' argument is deprecated. Use :proc:`createModule` instead.")
-    proc importModule(modName: string, moduleContents): owned Module throws
-      where moduleContents.type == string || moduleContents.type == bytes {
-      return new Module(this, modName, moduleContents);
     }
 
     /*
@@ -1603,7 +1503,7 @@ module Python {
 
   /*
     Represents an isolated Python sub-interpreter. This is useful for running
-    truly parallel Python code, without the GIL interferring.
+    truly parallel Python code, without the GIL interfering.
   */
   class SubInterpreter: Interpreter {
     @chpldoc.nodoc
@@ -2089,24 +1989,10 @@ module Python {
       This method can be used as a general accessor for Python objects.
       For example:
 
-      ..
-         START_TEST
-         FILENAME: GetFac.chpl
-         START_GOOD
-         END_GOOD
-
-      .. code-block:: chapel
-
-         use Python;
-         var interp = new Interpreter();
-         var mod = interp.importModule("math");
-
-         // the following two lines are equivalent
-         var fac1: Value = mod.get("factorial");
-         var fac2: Value = new Function(mod, "factorial");
-
-      ..
-         END_TEST
+      .. literalinclude:: ../../../../test/library/packages/Python/doc-examples/GetFac.chpl
+         :language: chapel
+         :start-after: START_EXAMPLE
+         :end-before: STOP_EXAMPLE
 
       :arg t: The Chapel type of the value to return.
       :arg attr: The name of the attribute/field to access.
@@ -3531,7 +3417,7 @@ module Python {
       compilerError("docs only");
     //
     // TODO: these are meant to prevent users from calling .these on a PyArray
-    // when they probaby wanted .values. But the mere presence of these as
+    // when they probably wanted .values. But the mere presence of these as
     // compiler errors prevents any program using Value.these from
     // compiling. And we can't just make them throw instead because inheritance
     // prevents iterator inlining, which is not yet supported
@@ -3683,7 +3569,7 @@ module Python {
   /*
     Represents a handle to a Chapel array that is usable by Python code. This
     allows code to pass Chapel arrays to Python without copying the data. This
-    only works for 1D local rectangular arrays.
+    only works for local rectangular arrays.
 
     .. note::
 
@@ -3735,7 +3621,7 @@ module Python {
     proc init(in interpreter: borrowed Interpreter, ref arr: [])
       where !isSupportedArrayType(arr) {
       super.init(interpreter, nil: PyObjectPtr, isOwned=false);
-      compilerError("Only 1D local rectangular arrays are currently supported");
+      compilerError("Only local rectangular arrays are currently supported");
       this.eltType = nothing;
     }
     @chpldoc.nodoc

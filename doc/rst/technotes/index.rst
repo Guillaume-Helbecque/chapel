@@ -19,9 +19,8 @@ Base Language Features
    Error Handling Modes and Prototype Modules <errorHandling>
    First-class Procedures in Chapel <firstClassProcedures>
    Including Sub-Modules from Separate Files <module_include>
-   main() Functions <main>
+   The 'main()' Function <main>
    Module Search Paths <module_search>
-   Operator Methods <operatorMethods>
    The 'manage' Statement <manage>
    Attributes <attributes>
    Interfaces <interfaces>
@@ -35,7 +34,6 @@ Initializers and Generic Programming
    :maxdepth: 1
 
    Forwarding Methods Calls <forwarding>
-   The ‘init=’ Method <initequals>
    Invoking Initializers with a Generic Instantiation <initTypeAlias>
    Partial Instantiations <partialInstantiations>
    Throwing Initializers <throwingInit>

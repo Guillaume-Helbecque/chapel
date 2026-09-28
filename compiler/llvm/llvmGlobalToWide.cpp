@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -172,35 +172,13 @@ namespace {
                              std::is_base_of_v<CallBase, BaseTy>,  bool> = true>
   void removeInvalidRetAttrs(BaseTy* V, Type* type) {
     auto mask = typeIncompatible(type);
-#if HAVE_LLVM_VER >= 140
     V->removeRetAttrs(mask);
-#else
-#if HAVE_LLVM_VER >= 120
-    V->removeAttributes(AttributeList::ReturnIndex, mask);
-#else
-    auto& ctx = V->getContext();
-    for (auto attr: AttributeSet::get(ctx, mask)) {
-      V->removeAttribute(AttributeList::ReturnIndex, attr.getKindAsEnum());
-    }
-#endif
-#endif
   }
   template <typename BaseTy, std::enable_if_t<std::is_base_of_v<Function, BaseTy> ||
                              std::is_base_of_v<CallBase, BaseTy>,  bool> = true>
   void removeInvalidParamAttrs(BaseTy* V, size_t idx, Type* type) {
     auto mask = typeIncompatible(type);
-#if HAVE_LLVM_VER >= 140
     V->removeParamAttrs(idx, mask);
-#else
-#if HAVE_LLVM_VER >= 120
-    V->removeAttributes(idx+1, mask);
-#else
-    auto& ctx = V->getContext();
-    for (auto attr: AttributeSet::get(ctx, mask)) {
-      V->removeAttribute(idx+1, attr.getKindAsEnum());
-    }
-#endif
-#endif
   }
 
   // Like the version in BasicBlockUtils but assumes New is already
@@ -304,14 +282,9 @@ namespace {
     trackLLVMValue(ptr);
 
     Constant* undef = UndefValue::get(widePtrType);
-#if HAVE_LLVM_VER >= 150
     IRBuilder<> irBuilder(insertBefore);
     Value* undefLocPtr = irBuilder.CreateExtractValue(undef, wideAddrGEP);
     trackLLVMValue(undefLocPtr);
-#else
-    Constant* undefLocPtr = ConstantExpr::getExtractValue(undef,
-                                                          wideAddrGEP);
-#endif
     // get the local address space pointer.
     Value* cast = CastInst::CreatePointerCast(ptr, undefLocPtr->getType(),
                                               "", getInsertPosition(insertBefore));
@@ -345,8 +318,8 @@ namespace {
 
     Value* alloc = makeAlloca(allocType, "widecast", insertBefore);
 
-    Type* fromPtrType = llvm::PointerType::getUnqual(fromValue->getType());
-    Type* newPtrType = llvm::PointerType::getUnqual(toType);
+    auto fromPtrType = getPointerType(fromValue->getType());
+    auto newPtrType = getPointerType(toType);
 
     Value* allocAsFrom = alloc;
     if (allocAsFrom->getType() != fromPtrType) {
@@ -423,7 +396,7 @@ namespace {
       voidPtrTy = getPointerType(M.getContext(), 0);
       glVoidPtrTy = getPointerType(M.getContext(), info->globalSpace);
       wideVoidPtrTy = convertTypeGlobalToWide(&M, info, glVoidPtrTy);
-      ptrLocTy = llvm::PointerType::getUnqual(info->localeIdType);
+      ptrLocTy = getPointerType(info->localeIdType);
       i64Ty = llvm::Type::getInt64Ty(M.getContext());
       i8Ty = llvm::Type::getInt8Ty(M.getContext());
 
@@ -1184,17 +1157,10 @@ namespace {
 
       if (newSrcTy != srcTy || newResTy != resTy) {
         // gather the indices
-#if HAVE_LLVM_VER >= 130
         SmallVector<Constant*> idxList;
         for (const auto& v : gepOp->indices()) {
           idxList.push_back(cast<Constant>(v));
         }
-#else
-        SmallVector<Constant*, 8> idxList;
-        for (auto it = gepOp->idx_begin(); it != gepOp->idx_end(); ++it) {
-          idxList.push_back(cast<Constant>(*it));
-        }
-#endif
         // Create a new GetElementPtrConstantExpr while changing the types
 #if HAVE_LLVM_VER >= 190
         auto inRangeIdx = gepOp->getInRange();
@@ -1333,7 +1299,11 @@ bool GlobalToWide::run(Module &M) {
       if( debugThisFn[0] || debugAllPassOne || debugAllPassTwo ) {
         dbgs() << "GlobalToWide: ";
         dbgs().write_escaped(M.getModuleIdentifier()) << '\n';
+#if LLVM_VERSION_MAJOR >= 21
+        dbgs().write_escaped(M.getTargetTriple().str()) << '\n';
+#else
         dbgs().write_escaped(M.getTargetTriple()) << '\n';
+#endif
       }
 
       // Normally we expect a user of this optimization to have
@@ -1341,12 +1311,12 @@ bool GlobalToWide::run(Module &M) {
       // information, but if not we set some defaults here so
       // that tests can be created and bugpoint can be run.
       if( !info ) {
-        Type* voidTy = llvm::Type::getVoidTy(M.getContext());
-        Type* voidPtrTy = getPointerType(M.getContext(), 0);
-        Type* i64Ty = llvm::Type::getInt64Ty(M.getContext());
-        Type* i8Ty = llvm::Type::getInt8Ty(M.getContext());
+        auto voidTy = llvm::Type::getVoidTy(M.getContext());
+        auto voidPtrTy = getPointerType(M.getContext(), 0);
+        auto i64Ty = llvm::Type::getInt64Ty(M.getContext());
+        auto i8Ty = llvm::Type::getInt8Ty(M.getContext());
         const DataLayout& DL = M.getDataLayout();
-        Type* sizeTy = DL.getIntPtrType(M.getContext(), 0);
+        auto sizeTy = DL.getIntPtrType(M.getContext(), 0);
 
         errs() << "Warning: GlobalToWide using default configuration\n";
         info = new GlobalToWideInfo();
@@ -1354,12 +1324,8 @@ bool GlobalToWide::run(Module &M) {
         info->globalSpace = 100;
         info->wideSpace = 101;
         info->globalPtrBits = 128;
-#if HAVE_LLVM_VER >= 120
         info->localeIdType = StructType::getTypeByName(M.getContext(),
                                                        "struct.c_localeid_t");
-#else
-        info->localeIdType = M.getTypeByName("struct.c_localeid_t");
-#endif
         if( ! info->localeIdType ) {
           StructType* t = StructType::create(M.getContext(), "struct.c_localeid_t");
           t->setBody(Type::getInt32Ty(M.getContext()),
@@ -1859,7 +1825,7 @@ bool GlobalToWide::run(Module &M) {
 
           Constant *init = ConstantExpr::getPointerCast(gv, new_type);
           GlobalAlias *new_alias = GlobalAlias::create(
-              llvm::PointerType::getUnqual(new_type),
+              getPointerType(new_type),
               0, /* addr space */
               ga->getLinkage(),
               "", init, &M);
@@ -2182,22 +2148,9 @@ void populateFunctionsForGlobalType(Module *module, GlobalToWideInfo* info, Type
   assert(info->localeIdType);
   assert(info->nodeIdType);
 
-  GlobalPointerInfo & r = info->gTypes[globalPtrTy];
+  GlobalPointerInfo& r = info->gTypes[globalPtrTy];
 
-  if (isOpaquePointer(globalPtrTy)) {
-#if HAVE_LLVM_VER >= 140
-    ptrTy = llvm::PointerType::getUnqual(module->getContext());
-#else
-    assert(false && "Should not be reachable");
-#endif
-  } else {
-#ifdef HAVE_LLVM_TYPED_POINTERS
-    ptrTy = llvm::PointerType::getUnqual(globalPtrTy->getPointerElementType());
-#else
-    assert(false && "Should not be reachable");
-#endif
-  }
-
+  ptrTy = getPointerType(module->getContext());
   locTy = info->localeIdType;
   nodeTy = info->nodeIdType;
 
@@ -2351,20 +2304,7 @@ Type* createWidePointerToType(Module* module, GlobalToWideInfo* i, Type* eltTy)
   // Get the wide pointer struct containing {locale, address}
   Type* fields[2];
   fields[0] = i->localeIdType;
-  llvm::PointerType* ptrTy = nullptr;
-  if (eltTy) {
-#ifdef HAVE_LLVM_TYPED_POINTERS
-    ptrTy = llvm::PointerType::getUnqual(eltTy);
-#else
-    assert(false && "Should not be reachable");
-#endif
-  } else {
-#if HAVE_LLVM_VER >= 140
-    ptrTy = llvm::PointerType::getUnqual(context);
-#else
-    assert(false && "Should not be reachable");
-#endif
-  }
+  llvm::Type* ptrTy = getPointerType(context);
   assert(ptrTy);
   fields[1] = ptrTy;
 
@@ -2450,33 +2390,12 @@ Type* convertTypeGlobalToWide(Module* module, GlobalToWideInfo* info, Type* t)
   }
 
   if (t->isPointerTy()) {
-    if (isOpaquePointer(t)) {
-#if HAVE_LLVM_VER >= 140
-      if (t->getPointerAddressSpace() == info->globalSpace ||
-          t->getPointerAddressSpace() == info->wideSpace) {
-          // Replace the pointer with a struct containing {locale, address}
-          return createWidePointerToType(module, info, nullptr);
-      } else {
-          return llvm::PointerType::get(context, t->getPointerAddressSpace());
-      }
-#else
-      assert(false && "Should not be reachable");
-#endif
+    if (t->getPointerAddressSpace() == info->globalSpace ||
+        t->getPointerAddressSpace() == info->wideSpace) {
+        // Replace the pointer with a struct containing {locale, address}
+        return createWidePointerToType(module, info, nullptr);
     } else {
-#ifdef HAVE_LLVM_TYPED_POINTERS
-      Type* eltType = t->getPointerElementType();
-      assert(t != t->getPointerElementType());  // detect simple recursion
-      Type* wideEltType = convertTypeGlobalToWide(module, info, eltType);
-      if (t->getPointerAddressSpace() == info->globalSpace ||
-          t->getPointerAddressSpace() == info->wideSpace) {
-          // Replace the pointer with a struct containing {locale, address}
-          return createWidePointerToType(module, info, wideEltType);
-      } else {
-          return llvm::PointerType::get(wideEltType, t->getPointerAddressSpace());
-      }
-#else
-      assert(false && "Should not be reachable");
-#endif
+        return getPointerType(context, t->getPointerAddressSpace());
     }
   }
 
@@ -2504,11 +2423,7 @@ Type* convertTypeGlobalToWide(Module* module, GlobalToWideInfo* info, Type* t)
       wideEltType = Type::getInt128Ty(context);
     }
 
-#if HAVE_LLVM_VER >= 110
     return VectorType::get(wideEltType, vecTy);
-#else
-    return VectorType::get(wideEltType, vecTy->getNumElements());
-#endif
   }
 
   assert(false && "should not be reached");

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -1018,7 +1018,7 @@ static bool doAdjustForConditional(CondStmt* cond, bool inThenBranch,
       // in Chapel: if obj then ...
       return adjustTestArgChain(testArg, inThenBranch, OUT);
 
-     if (is_bool_type(testArg->getValType()))
+     if (isBoolType(testArg->getValType()))
       // look for ==(t,nil), !=(nil,t), etc.
       if (CallExpr* TE = toCallExpr(getSingleDefExpr(testArg)))
       {

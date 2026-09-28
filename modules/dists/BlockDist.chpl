@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -61,9 +61,6 @@ public use SparseBlockDist;
 //
 config param debugBlockDist = false;
 config param debugBlockDistBulkTransfer = false;
-
-@deprecated("'disableAliasedBulkTransfer' is deprecated and has no effect")
-config const disableAliasedBulkTransfer = true;
 
 config param disableBlockDistBulkTransfer = false;
 config param disableBlockDistArrayViewElision = false;
@@ -145,15 +142,6 @@ bounding box are partitioned as evenly as possible across the target
 locales.  An index outside the bounding box is mapped to the same
 locale as the nearest index within the bounding box.
 
-.. Warning::
-
-  The ``blockDist`` distribution was, until recently, a class named
-  ``Block``.  Today, ``Block`` is still supported in a deprecated
-  form, yet is an alias to the ``blockDist`` record here.  In our
-  experience, most uses of ``Block`` in distribution contexts should
-  continue to work, but updating to ``blockDist`` is requested going
-  forward due to the deprecation.
-
 More precisely, an index ``idx`` is mapped to
 ``targetLocales[locIdx]``, where ``locIdx`` is computed as follows.
 
@@ -188,33 +176,14 @@ the non-distributed domain ``Space``.  It then declares an array ``A``
 over that domain.  The `forall` loop sets each array element to the ID
 of the locale to which it is mapped.
 
-  .. code-block:: chapel
-
-    use BlockDist;
-
-    const Space = {1..8, 1..8};
-    const Dist = new blockDist(boundingBox=Space);
-    const D = Dist.createDomain(Space);
-    var A: [D] int;
-
-    forall a in A do
-      a = here.id;
-
-    writeln(A);
+.. literalinclude:: ../../../../test/distributions/doc-examples/BlockDistExamples.chpl
+   :language: chapel
+   :start-after: START_EXAMPLE
+   :end-before: STOP_EXAMPLE
 
 When run on 6 locales, the output is:
 
-  ::
-
-    0 0 0 0 1 1 1 1
-    0 0 0 0 1 1 1 1
-    0 0 0 0 1 1 1 1
-    2 2 2 2 3 3 3 3
-    2 2 2 2 3 3 3 3
-    2 2 2 2 3 3 3 3
-    4 4 4 4 5 5 5 5
-    4 4 4 4 5 5 5 5
-
+.. literalinclude:: ../../../../test/distributions/doc-examples/BlockDistExamples.good
 
 **Data-Parallel Iteration**
 
@@ -498,10 +467,6 @@ operator =(ref a: blockDist(?), b: blockDist(?)) {
       _reprivatize(a._value);
   }
 }
-
-
-@deprecated("'Block' is deprecated, please use 'blockDist' instead")
-type Block = blockDist;
 
 
 @chpldoc.nodoc
@@ -1561,8 +1526,10 @@ proc BlockArr.nonLocalAccess(i: rank*idxType) ref {
           locRAD.unlockRAD(rlocIdx);
         }
       }
-      pragma "no copy" pragma "no auto destroy" var myLocRAD = myLocArr.locRAD;
-      pragma "no copy" pragma "no auto destroy" var radata = _to_nonnil(myLocRAD).RAD;
+      pragma "no copy" pragma "no auto destroy"
+      var myLocRAD = myLocArr.locRAD;
+      pragma "no copy" pragma "no auto destroy"
+      var radata = _to_nonnil(myLocRAD).RAD;
       if radata(rlocIdx).shiftedData != nil {
         var dataIdx = radata(rlocIdx).getDataIndex(i);
         return radata(rlocIdx).getDataElem(dataIdx);
@@ -1974,7 +1941,7 @@ proc BlockDom.numRemoteElems(viewDom, rlo, rid) {
 }
 
 private proc canDoAnyToBlock(Dest, destDom, Src, srcDom) param : bool {
-  if Src.doiCanBulkTransferRankChange() == false &&
+  if !Src.doiCanBulkTransferRankChange() &&
      Dest.rank != Src.rank then return false;
 
   use Reflection;
@@ -2295,7 +2262,7 @@ proc BlockArr.doiScan(op, dom) where (rank == 1) &&
         }
 
         // BigInteger values are yielded by ref to disable RVF
-        iter valIter(iterable) ref where !isPOD(iterable.eltType) {
+        iter valIter(ref iterable) ref where !isPOD(iterable.eltType) {
           for elem in iterable do yield elem;
         }
 

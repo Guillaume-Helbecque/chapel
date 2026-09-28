@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2025 Hewlett Packard Enterprise Development LP
+ * Copyright 2020-2026 Hewlett Packard Enterprise Development LP
  * Copyright 2004-2019 Cray Inc.
  * Other additional copyright holders may be indicated within.
  *
@@ -82,7 +82,7 @@ resolveInitializer(CallExpr* call, bool emitCallResolutionErrors) {
 
     resolveInitializerMatch(call->resolvedFunction());
 
-    if (isGenericRecord(call->get(2)->typeInfo())) {
+    if (isGenericRecord(call->get(2)->typeInfo()->getValType())) {
       SymExpr* namedSe = NULL;
 
       // There are two cases for generic records
